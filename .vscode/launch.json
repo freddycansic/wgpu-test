@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Windows",
+            "program": "${workspaceRoot}/target/debug/shooter-game-run",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "preLaunchTask": "rust: cargo build",
+            "cwd": "${workspaceRoot}",
+            "console": "integratedTerminal",
+            "linux": {
+                "type": "lldb"
+            }
+        }
+    ]
+}
