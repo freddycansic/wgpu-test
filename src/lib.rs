@@ -1,5 +1,7 @@
+mod input;
 mod texture;
 
+use cg::InnerSpace;
 use cgmath as cg;
 
 #[cfg(target_arch = "wasm32")]
@@ -36,7 +38,7 @@ impl MatrixToArray for cg::Matrix4<f32> {
 
 struct Camera {
     position: cg::Point3<f32>,
-    target: cg::Point3<f32>,
+    direction: cg::Vector3<f32>,
     up: cg::Vector3<f32>,
     aspect_ratio: f32,
     fov: f32,
@@ -46,7 +48,7 @@ struct Camera {
 
 impl Camera {
     fn build_view_projection_matrix(&self) -> cg::Matrix4<f32> {
-        let view = cg::Matrix4::look_at_rh(self.position, self.target, self.up);
+        let view = cg::Matrix4::look_at_rh(self.position, self.position + self.direction, self.up);
         let projection = cg::perspective(
             cg::Deg(self.fov),
             self.aspect_ratio,
@@ -54,7 +56,33 @@ impl Camera {
             self.z_far,
         );
 
-        OPENGL_TO_WGPU_MATRIX * view * projection
+        OPENGL_TO_WGPU_MATRIX * projection * view
+    }
+
+    fn process_events(&mut self, event: &WindowEvent) -> bool {
+        let forward = self.direction.normalize();
+        let left = forward.cross(self.up).normalize();
+        let speed = 0.05;
+
+        if input::event_on_key(event, VirtualKeyCode::W, ElementState::Pressed) {
+            self.position += forward * speed;
+        }
+
+        if input::event_on_key(event, VirtualKeyCode::S, ElementState::Pressed) {
+            self.position -= forward * speed;
+        }
+
+        if input::event_on_key(event, VirtualKeyCode::A, ElementState::Pressed) {
+            self.position -= left * speed;
+        }
+
+        if input::event_on_key(event, VirtualKeyCode::D, ElementState::Pressed) {
+            self.position += left * speed;
+        }
+
+        todo!("Fix camera not doing multiple movements at once");
+
+        false
     }
 }
 
@@ -236,8 +264,8 @@ impl State {
         });
 
         let camera = Camera {
-            position: (0.0, 1.0, 2.0).into(),
-            target: (0.0, 0.0, 0.0).into(),
+            position: (0.0, 0.0, 2.0).into(),
+            direction: -cg::Vector3::unit_z(),
             up: cg::Vector3::unit_y(),
             aspect_ratio: config.width as f32 / config.height as f32,
             fov: 45.0,
@@ -262,19 +290,17 @@ impl State {
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
-                    count: None
+                    count: None,
                 }],
             });
 
         let view_projection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("View Projection Bind Group"),
             layout: &view_projection_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: view_projection_buffer.as_entire_binding()
-                }
-            ]
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: view_projection_buffer.as_entire_binding(),
+            }],
         });
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -298,7 +324,10 @@ impl State {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout, &view_projection_bind_group_layout],
+                bind_group_layouts: &[
+                    &texture_bind_group_layout,
+                    &view_projection_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -377,10 +406,16 @@ impl State {
     }
 
     fn input(&mut self, event: &WindowEvent) -> bool {
-        false
+        self.camera.process_events(event)
     }
 
-    fn update(&mut self) {}
+    fn update(&mut self) {
+        self.queue.write_buffer(
+            &self.view_projection_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().to_array()]),
+        );
+    }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         // wait for surface to provide a new SurfaceTexture to write on
@@ -421,11 +456,12 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
+            // uniforms
             render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
             render_pass.set_bind_group(1, &self.view_projection_bind_group, &[]);
+            // rendering
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            // render_pass.draw(0..VERTICES.len() as u32, 0..1);
             render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
         }
 
