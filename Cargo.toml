@@ -12,8 +12,10 @@ path = "src/main.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+anyhow = "1.0.75"
 bytemuck = { version = "1.13.1", features = ["derive"] }
 cfg-if = "1.0.0"
+cgmath = "0.18.0"
 env_logger = "0.10.0"
 lazy_static = "1.4.0"
 log = "0.4.20"
@@ -21,6 +23,12 @@ pollster = "0.3.0"
 wasm-bindgen-futures = "0.4.37"
 wgpu = "0.17.0"
 winit = "0.28.6"
+
+# NOTE: https://sotrh.github.io/learn-wgpu/beginner/tutorial5-textures/#loading-an-image-from-a-file Decoding jpegs in WASM isn't very performant. If you want to speed up image loading in general in WASM you could opt to use the browser's built-in decoders instead of image when building with wasm-bindgen. This will involve creating an <img> tag in Rust to get the image, and then a <canvas> to get the pixel data
+[dependencies.image]
+version = "0.24"
+default-features = false
+features = ["png", "jpeg"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "0.17", features = ["webgl"]}
