@@ -1,5 +1,7 @@
 mod texture;
 
+use cgmath as cg;
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -12,6 +14,49 @@ use winit::{
 };
 
 use texture::Texture;
+
+// opengl NDC has z dimension from -1 to 1, wgpu has it from 0 to 1
+#[rustfmt::skip]
+pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.5, 0.5,
+    0.0, 0.0, 0.0, 1.0,
+);
+
+trait MatrixToArray {
+    fn to_array(&self) -> [[f32; 4]; 4];
+}
+
+impl MatrixToArray for cg::Matrix4<f32> {
+    fn to_array(&self) -> [[f32; 4]; 4] {
+        (*self).into()
+    }
+}
+
+struct Camera {
+    position: cg::Point3<f32>,
+    target: cg::Point3<f32>,
+    up: cg::Vector3<f32>,
+    aspect_ratio: f32,
+    fov: f32,
+    z_near: f32,
+    z_far: f32,
+}
+
+impl Camera {
+    fn build_view_projection_matrix(&self) -> cg::Matrix4<f32> {
+        let view = cg::Matrix4::look_at_rh(self.position, self.target, self.up);
+        let projection = cg::perspective(
+            cg::Deg(self.fov),
+            self.aspect_ratio,
+            self.z_near,
+            self.z_far,
+        );
+
+        OPENGL_TO_WGPU_MATRIX * view * projection
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -69,7 +114,10 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     texture_bind_group: wgpu::BindGroup,
-    diffuse_texture: Texture
+    diffuse_texture: Texture,
+    camera: Camera,
+    view_projection_buffer: wgpu::Buffer,
+    view_projection_bind_group: wgpu::BindGroup,
 }
 
 impl State {
@@ -139,36 +187,38 @@ impl State {
         surface.configure(&device, &config);
 
         let diffuse_texture = Texture::from_bytes(
-            include_bytes!("C:/Users/fredd/Desktop/passport-photo.jpg"),
+            include_bytes!("../assets/happy-tree.png"),
             &device,
             &queue,
             Some("passport-photo.jpg"),
-        ).unwrap();
+        )
+        .unwrap();
 
         // bind group describes a set of resources and how they can be accessed by the shaders
-        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        // IDK
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            // IDK
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    // WHAT?
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-            label: Some("Texture Bind Group Layout"),
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        // WHAT?
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("Texture Bind Group Layout"),
+            });
 
         let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Diffuse Bind Group"),
@@ -183,6 +233,48 @@ impl State {
                     resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
                 },
             ],
+        });
+
+        let camera = Camera {
+            position: (0.0, 1.0, 2.0).into(),
+            target: (0.0, 0.0, 0.0).into(),
+            up: cg::Vector3::unit_y(),
+            aspect_ratio: config.width as f32 / config.height as f32,
+            fov: 45.0,
+            z_near: 0.1,
+            z_far: 100.0,
+        };
+
+        let view_projection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("View Projection Buffer"),
+            contents: bytemuck::cast_slice(&[camera.build_view_projection_matrix().to_array()]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let view_projection_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("View Projection Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None
+                }],
+            });
+
+        let view_projection_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("View Projection Bind Group"),
+            layout: &view_projection_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: view_projection_buffer.as_entire_binding()
+                }
+            ]
         });
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -206,7 +298,7 @@ impl State {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout],
+                bind_group_layouts: &[&texture_bind_group_layout, &view_projection_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -263,7 +355,10 @@ impl State {
             vertex_buffer,
             index_buffer,
             texture_bind_group,
-            diffuse_texture
+            diffuse_texture,
+            camera,
+            view_projection_buffer,
+            view_projection_bind_group,
         }
     }
 
@@ -327,6 +422,7 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.view_projection_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             // render_pass.draw(0..VERTICES.len() as u32, 0..1);
