@@ -59,30 +59,26 @@ impl Camera {
         OPENGL_TO_WGPU_MATRIX * projection * view
     }
 
-    fn process_events(&mut self, event: &WindowEvent) -> bool {
+    fn update(&mut self) {
         let forward = self.direction.normalize();
         let left = forward.cross(self.up).normalize();
         let speed = 0.05;
 
-        if input::event_on_key(event, VirtualKeyCode::W, ElementState::Pressed) {
+        if input::is_key(VirtualKeyCode::W, ElementState::Pressed) {
             self.position += forward * speed;
         }
 
-        if input::event_on_key(event, VirtualKeyCode::S, ElementState::Pressed) {
+        if input::is_key(VirtualKeyCode::S, ElementState::Pressed) {
             self.position -= forward * speed;
         }
 
-        if input::event_on_key(event, VirtualKeyCode::A, ElementState::Pressed) {
+        if input::is_key(VirtualKeyCode::A, ElementState::Pressed) {
             self.position -= left * speed;
         }
 
-        if input::event_on_key(event, VirtualKeyCode::D, ElementState::Pressed) {
+        if input::is_key(VirtualKeyCode::D, ElementState::Pressed) {
             self.position += left * speed;
         }
-
-        todo!("Fix camera not doing multiple movements at once");
-
-        false
     }
 }
 
@@ -405,8 +401,8 @@ impl State {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn input(&mut self, event: &WindowEvent) -> bool {
-        self.camera.process_events(event)
+    fn process_events(&mut self, event: &WindowEvent) {
+        input::update_key_state(event);
     }
 
     fn update(&mut self) {
@@ -415,6 +411,8 @@ impl State {
             0,
             bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().to_array()]),
         );
+
+        self.camera.update();
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -512,26 +510,26 @@ pub async fn run() {
             ref event,
             window_id,
         } if window_id == state.window().id() => {
-            if !state.input(event) {
-                match event {
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                state: ElementState::Pressed,
-                                virtual_keycode: Some(VirtualKeyCode::Escape),
-                                ..
-                            },
-                        ..
-                    } => *control_flow = ControlFlow::Exit,
-                    WindowEvent::Resized(physical_size) => {
-                        state.resize(*physical_size);
-                    }
-                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                        state.resize(**new_inner_size);
-                    }
-                    _ => {}
+            state.process_events(event);
+
+            match event {
+                WindowEvent::CloseRequested
+                | WindowEvent::KeyboardInput {
+                    input:
+                        KeyboardInput {
+                            state: ElementState::Pressed,
+                            virtual_keycode: Some(VirtualKeyCode::Escape),
+                            ..
+                        },
+                    ..
+                } => *control_flow = ControlFlow::Exit,
+                WindowEvent::Resized(physical_size) => {
+                    state.resize(*physical_size);
                 }
+                WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                    state.resize(**new_inner_size);
+                }
+                _ => {}
             }
         }
         Event::RedrawRequested(window_id) if window_id == state.window().id() => {
