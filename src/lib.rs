@@ -1,7 +1,7 @@
 mod input;
 mod texture;
 
-use cg::{InnerSpace, Rotation3, Angle};
+use cg::{Angle, InnerSpace, Rotation3, Matrix};
 use cgmath as cg;
 
 #[cfg(target_arch = "wasm32")]
@@ -27,13 +27,19 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
     0.0, 0.0, 0.0, 1.0,
 );
 
-trait MatrixToArray {
-    fn to_array(&self) -> [[f32; 4]; 4];
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct MatrixUniform {
+    matrix: [[f32; 4]; 4]
 }
 
-impl MatrixToArray for cg::Matrix4<f32> {
-    fn to_array(&self) -> [[f32; 4]; 4] {
-        (*self).into()
+trait ToUniform<T: bytemuck::Pod + bytemuck::Zeroable> {
+    fn to_uniform(self) -> T;
+}
+
+impl ToUniform<MatrixUniform> for cg::Matrix4<f32> {
+    fn to_uniform(self) -> MatrixUniform {
+        MatrixUniform{ matrix: self.into() }
     }
 }
 
@@ -89,7 +95,7 @@ impl Camera {
         let mouse_diff = input().read().unwrap().mouse_diff();
 
         if mouse_diff == (0.0, 0.0) {
-            return
+            return;
         }
 
         let sensitivity = 0.05;
@@ -104,7 +110,8 @@ impl Camera {
             z: self.yaw.sin() * self.pitch.cos(),
             x: self.pitch.sin(),
             y: self.yaw.cos() * self.pitch.cos(),
-        }.normalize();
+        }
+        .normalize();
     }
 }
 
@@ -319,7 +326,7 @@ impl State {
 
         let view_projection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("View Projection Buffer"),
-            contents: bytemuck::cast_slice(&[camera.build_view_projection_matrix().to_array()]),
+            contents: bytemuck::cast_slice(&[camera.build_view_projection_matrix().to_uniform()]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -445,9 +452,9 @@ impl State {
             .map(|instance| {
                 (cg::Matrix4::from_translation(instance.position)
                     * cg::Matrix4::from(instance.rotation))
-                .to_array()
+                .to_uniform()
             })
-            .collect::<Vec<[[f32; 4]; 4]>>();
+            .collect::<Vec<MatrixUniform>>();
 
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
@@ -498,7 +505,7 @@ impl State {
         self.queue.write_buffer(
             &self.view_projection_buffer,
             0,
-            bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().to_array()]),
+            bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().to_uniform()]),
         );
 
         self.camera.update_position();

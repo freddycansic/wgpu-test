@@ -47,7 +47,7 @@ impl ContinuousKeyPresses for WinitInputHelper {
     fn key_down(&self, key: VirtualKeyCode) -> bool {
         KEY_STATES.read().unwrap()[key as usize] == ElementState::Pressed
     }
-    
+
     /// First release until press
     fn key_up(&self, key: VirtualKeyCode) -> bool {
         KEY_STATES.read().unwrap()[key as usize] == ElementState::Released
