@@ -1,7 +1,7 @@
 mod input;
 mod texture;
 
-use cg::InnerSpace;
+use cg::{InnerSpace, Rotation3, Angle};
 use cgmath as cg;
 
 #[cfg(target_arch = "wasm32")]
@@ -15,6 +15,7 @@ use winit::{
     window::WindowBuilder,
 };
 
+use input::{input, ContinuousKeyPresses};
 use texture::Texture;
 
 // opengl NDC has z dimension from -1 to 1, wgpu has it from 0 to 1
@@ -39,6 +40,8 @@ impl MatrixToArray for cg::Matrix4<f32> {
 struct Camera {
     position: cg::Point3<f32>,
     direction: cg::Vector3<f32>,
+    yaw: f32,
+    pitch: f32,
     up: cg::Vector3<f32>,
     aspect_ratio: f32,
     fov: f32,
@@ -59,26 +62,49 @@ impl Camera {
         OPENGL_TO_WGPU_MATRIX * projection * view
     }
 
-    fn update(&mut self) {
+    fn update_position(&mut self) {
         let forward = self.direction.normalize();
         let left = forward.cross(self.up).normalize();
         let speed = 0.05;
 
-        if input::is_key(VirtualKeyCode::W, ElementState::Pressed) {
+        // :(
+        if input().read().unwrap().key_down(VirtualKeyCode::W) {
             self.position += forward * speed;
         }
 
-        if input::is_key(VirtualKeyCode::S, ElementState::Pressed) {
+        if input().read().unwrap().key_down(VirtualKeyCode::S) {
             self.position -= forward * speed;
         }
 
-        if input::is_key(VirtualKeyCode::A, ElementState::Pressed) {
+        if input().read().unwrap().key_down(VirtualKeyCode::A) {
             self.position -= left * speed;
         }
 
-        if input::is_key(VirtualKeyCode::D, ElementState::Pressed) {
+        if input().read().unwrap().key_down(VirtualKeyCode::D) {
             self.position += left * speed;
         }
+    }
+
+    fn update_direction(&mut self) {
+        let mouse_diff = input().read().unwrap().mouse_diff();
+
+        if mouse_diff == (0.0, 0.0) {
+            return
+        }
+
+        let sensitivity = 0.05;
+
+        self.yaw += mouse_diff.0 * sensitivity;
+        self.pitch += mouse_diff.1 * sensitivity;
+
+        // let pi = std::f32::consts::PI;
+        // self.pitch = self.pitch.clamp(-pi / 2.0, pi / 2.0);
+
+        self.direction = cg::Vector3 {
+            z: self.yaw.sin() * self.pitch.cos(),
+            x: self.pitch.sin(),
+            y: self.yaw.cos() * self.pitch.cos(),
+        }.normalize();
     }
 }
 
@@ -127,6 +153,25 @@ const VERTICES: &[Vertex] = &[
 ];
 
 const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
+
+struct Instance {
+    position: cg::Vector3<f32>,
+    rotation: cg::Quaternion<f32>,
+}
+
+impl Instance {
+    const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+        wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
+
+    fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::INSTANCE_ATTRIBUTES,
+        }
+    }
+}
+
 struct State {
     surface: wgpu::Surface,
     device: wgpu::Device,
@@ -138,10 +183,11 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     texture_bind_group: wgpu::BindGroup,
-    diffuse_texture: Texture,
     camera: Camera,
     view_projection_buffer: wgpu::Buffer,
     view_projection_bind_group: wgpu::BindGroup,
+    instances: Vec<Instance>,
+    instance_buffer: wgpu::Buffer,
 }
 
 impl State {
@@ -260,8 +306,10 @@ impl State {
         });
 
         let camera = Camera {
-            position: (0.0, 0.0, 2.0).into(),
+            position: (0.0, 2.0, 2.0).into(),
             direction: -cg::Vector3::unit_z(),
+            pitch: 0.0,
+            yaw: 0.0,
             up: cg::Vector3::unit_y(),
             aspect_ratio: config.width as f32 / config.height as f32,
             fov: 45.0,
@@ -334,7 +382,7 @@ impl State {
                 module: &shader,
                 entry_point: "vs_main",
                 // type of vertices to pass to the vertex shader
-                buffers: &[Vertex::buffer_layout()],
+                buffers: &[Vertex::buffer_layout(), Instance::buffer_layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -369,6 +417,44 @@ impl State {
             multiview: None,
         });
 
+        const INSTANCES_PER_ROW: u32 = 10;
+        let instances = (0..INSTANCES_PER_ROW)
+            .flat_map(|z| {
+                (0..INSTANCES_PER_ROW).map(move |x| {
+                    let position = cg::Vector3 {
+                        x: x as f32 * 5.0,
+                        y: 0.0,
+                        z: z as f32 * 5.0,
+                    };
+
+                    println!("{:?}", position);
+
+                    Instance {
+                        position,
+                        rotation: cg::Quaternion::from_axis_angle(
+                            position.normalize(),
+                            cg::Deg(45.0),
+                        ),
+                    }
+                })
+            })
+            .collect::<Vec<Instance>>();
+
+        let instance_data = instances
+            .iter()
+            .map(|instance| {
+                (cg::Matrix4::from_translation(instance.position)
+                    * cg::Matrix4::from(instance.rotation))
+                .to_array()
+            })
+            .collect::<Vec<[[f32; 4]; 4]>>();
+
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Instance Buffer"),
+            contents: bytemuck::cast_slice(&instance_data),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
         Self {
             surface,
             device,
@@ -380,10 +466,11 @@ impl State {
             vertex_buffer,
             index_buffer,
             texture_bind_group,
-            diffuse_texture,
             camera,
             view_projection_buffer,
             view_projection_bind_group,
+            instances,
+            instance_buffer,
         }
     }
 
@@ -401,10 +488,12 @@ impl State {
         self.surface.configure(&self.device, &self.config);
     }
 
+    // called per event
     fn process_events(&mut self, event: &WindowEvent) {
-        input::update_key_state(event);
+        self.camera.update_direction();
     }
 
+    // called per frame
     fn update(&mut self) {
         self.queue.write_buffer(
             &self.view_projection_buffer,
@@ -412,7 +501,7 @@ impl State {
             bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().to_array()]),
         );
 
-        self.camera.update();
+        self.camera.update_position();
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -459,8 +548,9 @@ impl State {
             render_pass.set_bind_group(1, &self.view_projection_bind_group, &[]);
             // rendering
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..1);
+            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
         }
 
         // submit to render queue
@@ -505,46 +595,50 @@ pub async fn run() {
 
     let mut state = State::new(window).await;
 
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == state.window().id() => {
-            state.process_events(event);
+    event_loop.run(move |event, _, control_flow| {
+        input::update_input_state(&event);
 
-            match event {
-                WindowEvent::CloseRequested
-                | WindowEvent::KeyboardInput {
-                    input:
-                        KeyboardInput {
-                            state: ElementState::Pressed,
-                            virtual_keycode: Some(VirtualKeyCode::Escape),
-                            ..
-                        },
-                    ..
-                } => *control_flow = ControlFlow::Exit,
-                WindowEvent::Resized(physical_size) => {
-                    state.resize(*physical_size);
+        match event {
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == state.window().id() => {
+                state.process_events(event);
+
+                match event {
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state: ElementState::Pressed,
+                                virtual_keycode: Some(VirtualKeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => *control_flow = ControlFlow::Exit,
+                    WindowEvent::Resized(physical_size) => {
+                        state.resize(*physical_size);
+                    }
+                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                        state.resize(**new_inner_size);
+                    }
+                    _ => {}
                 }
-                WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                    state.resize(**new_inner_size);
+            }
+            Event::RedrawRequested(window_id) if window_id == state.window().id() => {
+                state.update();
+                match state.render() {
+                    Ok(_) => {}
+                    // reconfigure the surface if lost
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
+                    Err(e) => eprintln!("{:?}", e),
                 }
-                _ => {}
             }
-        }
-        Event::RedrawRequested(window_id) if window_id == state.window().id() => {
-            state.update();
-            match state.render() {
-                Ok(_) => {}
-                // reconfigure the surface if lost
-                Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-                Err(e) => eprintln!("{:?}", e),
+            Event::MainEventsCleared => {
+                state.window().request_redraw();
             }
+            _ => {}
         }
-        Event::MainEventsCleared => {
-            state.window().request_redraw();
-        }
-        _ => {}
     });
 }

@@ -23,6 +23,7 @@ pollster = "0.3.0"
 wasm-bindgen-futures = "0.4.37"
 wgpu = "0.17.0"
 winit = "0.28.6"
+winit_input_helper = "0.14.1"
 
 # NOTE: https://sotrh.github.io/learn-wgpu/beginner/tutorial5-textures/#loading-an-image-from-a-file Decoding jpegs in WASM isn't very performant. If you want to speed up image loading in general in WASM you could opt to use the browser's built-in decoders instead of image when building with wasm-bindgen. This will involve creating an <img> tag in Rust to get the image, and then a <canvas> to get the pixel data
 [dependencies.image]
