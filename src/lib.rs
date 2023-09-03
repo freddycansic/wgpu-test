@@ -1,7 +1,7 @@
 mod input;
 mod texture;
 
-use cg::{Angle, InnerSpace, Rotation3, Matrix};
+use cg::{Angle, InnerSpace, Matrix, Rotation3};
 use cgmath as cg;
 
 #[cfg(target_arch = "wasm32")]
@@ -29,9 +29,7 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct MatrixUniform {
-    matrix: [[f32; 4]; 4]
-}
+struct MatrixUniform([[f32; 4]; 4]);
 
 trait ToUniform<T: bytemuck::Pod + bytemuck::Zeroable> {
     fn to_uniform(self) -> T;
@@ -39,7 +37,7 @@ trait ToUniform<T: bytemuck::Pod + bytemuck::Zeroable> {
 
 impl ToUniform<MatrixUniform> for cg::Matrix4<f32> {
     fn to_uniform(self) -> MatrixUniform {
-        MatrixUniform{ matrix: self.into() }
+        MatrixUniform(self.into())
     }
 }
 
@@ -98,18 +96,18 @@ impl Camera {
             return;
         }
 
-        let sensitivity = 0.05;
+        let sensitivity = 0.01;
 
         self.yaw += mouse_diff.0 * sensitivity;
         self.pitch += mouse_diff.1 * sensitivity;
 
-        // let pi = std::f32::consts::PI;
-        // self.pitch = self.pitch.clamp(-pi / 2.0, pi / 2.0);
+        let pi = std::f32::consts::PI;
+        self.pitch = self.pitch.clamp(-pi / 2.0, pi / 2.0);
 
         self.direction = cg::Vector3 {
+            x: self.yaw.cos() * self.pitch.cos(),
+            y: -self.pitch.sin(),
             z: self.yaw.sin() * self.pitch.cos(),
-            x: self.pitch.sin(),
-            y: self.yaw.cos() * self.pitch.cos(),
         }
         .normalize();
     }
@@ -193,7 +191,7 @@ struct State {
     camera: Camera,
     view_projection_buffer: wgpu::Buffer,
     view_projection_bind_group: wgpu::BindGroup,
-    instances: Vec<Instance>,
+    // instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
 }
 
@@ -425,36 +423,39 @@ impl State {
         });
 
         const INSTANCES_PER_ROW: u32 = 10;
-        let instances = (0..INSTANCES_PER_ROW)
-            .flat_map(|z| {
-                (0..INSTANCES_PER_ROW).map(move |x| {
-                    let position = cg::Vector3 {
-                        x: x as f32 * 5.0,
-                        y: 0.0,
-                        z: z as f32 * 5.0,
-                    };
+        // let instances = (0..INSTANCES_PER_ROW)
+        //     .flat_map(|z| {
+        //         (0..INSTANCES_PER_ROW).map(move |x| {
+        //             let position = cg::Vector3 {
+        //                 x: x as f32 * 2.0,
+        //                 y: 0.0,
+        //                 z: z as f32 * 2.0,
+        //             };
 
-                    println!("{:?}", position);
+        //             // println!("{:?}", position);
 
-                    Instance {
-                        position,
-                        rotation: cg::Quaternion::from_axis_angle(
-                            position.normalize(),
-                            cg::Deg(45.0),
-                        ),
-                    }
-                })
-            })
-            .collect::<Vec<Instance>>();
+        //             Instance {
+        //                 position,
+        //                 // rotation: cg::Quaternion::from_axis_angle(
+        //                 //     position.normalize(),
+        //                 //     cg::Deg(45.0),
+        //                 // ),
+        //                 rotation: cg::Quaternion::from_angle_x(cg::Deg(0.0))
+        //             }
+        //         })
+        //     })
+        //     .collect::<Vec<Instance>>();
 
-        let instance_data = instances
-            .iter()
-            .map(|instance| {
-                (cg::Matrix4::from_translation(instance.position)
-                    * cg::Matrix4::from(instance.rotation))
-                .to_uniform()
-            })
-            .collect::<Vec<MatrixUniform>>();
+        // let instance_data = instances
+        //     .iter()
+        //     .map(|instance| {
+        //         (cg::Matrix4::from_translation(instance.position)
+        //             * cg::Matrix4::from(instance.rotation))
+        //         .to_uniform()
+        //     })
+        //     .collect::<Vec<MatrixUniform>>();
+        let instance_data = (0..INSTANCES_PER_ROW)
+            .map(|x| cg::Matrix4::from_translation(cg::Vector3 { x: x as f32, y: 0.0, z: 0.0 }).to_uniform()).collect::<Vec<MatrixUniform>>();
 
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
@@ -476,7 +477,7 @@ impl State {
             camera,
             view_projection_buffer,
             view_projection_bind_group,
-            instances,
+            // instances,
             instance_buffer,
         }
     }
@@ -557,7 +558,8 @@ impl State {
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
+            // render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
+            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..3);
         }
 
         // submit to render queue
