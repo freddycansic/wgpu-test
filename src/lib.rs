@@ -208,6 +208,8 @@ struct State {
     view_projection_bind_group: wgpu::BindGroup,
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
+    start_time: instant::Instant,
+    current_time: instant::Duration,
 }
 
 impl State {
@@ -438,33 +440,16 @@ impl State {
         });
 
         const NUM_INSTANCES_PER_ROW: u32 = 10;
-        const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(
-            NUM_INSTANCES_PER_ROW as f32 * 0.5,
-            0.0,
-            NUM_INSTANCES_PER_ROW as f32 * 0.5,
-        );
 
         let instances = (0..NUM_INSTANCES_PER_ROW)
             .flat_map(|z| {
-                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                    let position = cgmath::Vector3 {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| Instance {
+                    position: cg::Vector3 {
                         x: x as f32,
                         y: 0.0,
                         z: z as f32,
-                    } - INSTANCE_DISPLACEMENT;
-
-                    let rotation = if position.is_zero() {
-                        // this is needed so an object at (0, 0, 0) won't get scaled to zero
-                        // as Quaternions can effect scale if they're not created correctly
-                        cgmath::Quaternion::from_axis_angle(
-                            cgmath::Vector3::unit_z(),
-                            cgmath::Deg(0.0),
-                        )
-                    } else {
-                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
-                    };
-
-                    Instance { position, rotation }
+                    },
+                    rotation: cg::Quaternion::from_angle_x(cg::Deg(0.0)),
                 })
             })
             .collect::<Vec<_>>();
@@ -473,11 +458,15 @@ impl State {
             .iter()
             .map(InstanceRaw::from)
             .collect::<Vec<InstanceRaw>>();
+
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
             contents: bytemuck::cast_slice(&instance_data),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
+
+        let start_time = instant::Instant::now();
+        let current_time = start_time.elapsed();
 
         Self {
             surface,
@@ -495,6 +484,8 @@ impl State {
             view_projection_bind_group,
             instances,
             instance_buffer,
+            start_time,
+            current_time,
         }
     }
 
@@ -519,10 +510,44 @@ impl State {
 
     // called per frame
     fn update(&mut self) {
+        self.current_time = self.start_time.elapsed();
+
         self.queue.write_buffer(
             &self.view_projection_buffer,
             0,
             bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().to_uniform()]),
+        );
+
+        const NUM_INSTANCES_PER_ROW: u32 = 10;
+        self.instances = (0..NUM_INSTANCES_PER_ROW)
+            .flat_map(|x| {
+                let num_instances = NUM_INSTANCES_PER_ROW as f32;
+                let pi = std::f32::consts::PI;
+                let angle = x as f32 / num_instances * pi * 2.0; // between 0 and 2pi
+                let angle = (angle + self.current_time.as_secs_f32()) % (pi * 2.0); // shift period by time
+                let y = angle.sin() * 2.0;
+
+                (0..NUM_INSTANCES_PER_ROW).map(move |z| Instance {
+                    position: cg::Vector3 {
+                        x: x as f32,
+                        y,
+                        z: z as f32,
+                    },
+                    rotation: cg::Quaternion::from_angle_x(cg::Deg(0.0)),
+                })
+            })
+            .collect();
+
+        let instance_data = self
+            .instances
+            .iter()
+            .map(InstanceRaw::from)
+            .collect::<Vec<InstanceRaw>>();
+
+        self.queue.write_buffer(
+            &self.instance_buffer,
+            0,
+            bytemuck::cast_slice(&instance_data),
         );
 
         self.camera.update_position();
