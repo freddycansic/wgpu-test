@@ -1,7 +1,7 @@
 mod input;
 mod texture;
 
-use cg::{Angle, InnerSpace, Matrix, Rotation3};
+use cg::prelude::*;
 use cgmath as cg;
 
 #[cfg(target_arch = "wasm32")]
@@ -164,16 +164,31 @@ struct Instance {
     rotation: cg::Quaternion<f32>,
 }
 
-impl Instance {
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct InstanceRaw([[f32; 4]; 4]);
+
+impl InstanceRaw {
     const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
         wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4];
 
-    fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        use std::mem;
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &Self::INSTANCE_ATTRIBUTES,
         }
+    }
+}
+
+impl From<&Instance> for InstanceRaw {
+    fn from(instance: &Instance) -> Self {
+        InstanceRaw(
+            (cg::Matrix4::from_translation(instance.position)
+                * cg::Matrix4::from(instance.rotation))
+            .into(),
+        )
     }
 }
 
@@ -191,7 +206,7 @@ struct State {
     camera: Camera,
     view_projection_buffer: wgpu::Buffer,
     view_projection_bind_group: wgpu::BindGroup,
-    // instances: Vec<Instance>,
+    instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
 }
 
@@ -387,7 +402,7 @@ impl State {
                 module: &shader,
                 entry_point: "vs_main",
                 // type of vertices to pass to the vertex shader
-                buffers: &[Vertex::buffer_layout(), Instance::buffer_layout()],
+                buffers: &[Vertex::buffer_layout(), InstanceRaw::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -422,41 +437,42 @@ impl State {
             multiview: None,
         });
 
-        const INSTANCES_PER_ROW: u32 = 10;
-        // let instances = (0..INSTANCES_PER_ROW)
-        //     .flat_map(|z| {
-        //         (0..INSTANCES_PER_ROW).map(move |x| {
-        //             let position = cg::Vector3 {
-        //                 x: x as f32 * 2.0,
-        //                 y: 0.0,
-        //                 z: z as f32 * 2.0,
-        //             };
+        const NUM_INSTANCES_PER_ROW: u32 = 10;
+        const INSTANCE_DISPLACEMENT: cgmath::Vector3<f32> = cgmath::Vector3::new(
+            NUM_INSTANCES_PER_ROW as f32 * 0.5,
+            0.0,
+            NUM_INSTANCES_PER_ROW as f32 * 0.5,
+        );
 
-        //             // println!("{:?}", position);
+        let instances = (0..NUM_INSTANCES_PER_ROW)
+            .flat_map(|z| {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                    let position = cgmath::Vector3 {
+                        x: x as f32,
+                        y: 0.0,
+                        z: z as f32,
+                    } - INSTANCE_DISPLACEMENT;
 
-        //             Instance {
-        //                 position,
-        //                 // rotation: cg::Quaternion::from_axis_angle(
-        //                 //     position.normalize(),
-        //                 //     cg::Deg(45.0),
-        //                 // ),
-        //                 rotation: cg::Quaternion::from_angle_x(cg::Deg(0.0))
-        //             }
-        //         })
-        //     })
-        //     .collect::<Vec<Instance>>();
+                    let rotation = if position.is_zero() {
+                        // this is needed so an object at (0, 0, 0) won't get scaled to zero
+                        // as Quaternions can effect scale if they're not created correctly
+                        cgmath::Quaternion::from_axis_angle(
+                            cgmath::Vector3::unit_z(),
+                            cgmath::Deg(0.0),
+                        )
+                    } else {
+                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
+                    };
 
-        // let instance_data = instances
-        //     .iter()
-        //     .map(|instance| {
-        //         (cg::Matrix4::from_translation(instance.position)
-        //             * cg::Matrix4::from(instance.rotation))
-        //         .to_uniform()
-        //     })
-        //     .collect::<Vec<MatrixUniform>>();
-        let instance_data = (0..INSTANCES_PER_ROW)
-            .map(|x| cg::Matrix4::from_translation(cg::Vector3 { x: x as f32, y: 0.0, z: 0.0 }).to_uniform()).collect::<Vec<MatrixUniform>>();
+                    Instance { position, rotation }
+                })
+            })
+            .collect::<Vec<_>>();
 
+        let instance_data = instances
+            .iter()
+            .map(InstanceRaw::from)
+            .collect::<Vec<InstanceRaw>>();
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
             contents: bytemuck::cast_slice(&instance_data),
@@ -477,7 +493,7 @@ impl State {
             camera,
             view_projection_buffer,
             view_projection_bind_group,
-            // instances,
+            instances,
             instance_buffer,
         }
     }
@@ -558,8 +574,7 @@ impl State {
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            // render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
-            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..3);
+            render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
         }
 
         // submit to render queue
