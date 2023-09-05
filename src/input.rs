@@ -1,4 +1,6 @@
+use once_cell::sync::Lazy;
 use std::sync::RwLock;
+
 use winit::event::*;
 use winit_input_helper::WinitInputHelper;
 
@@ -6,9 +8,8 @@ const NUM_KEYS: usize = 162;
 static KEY_STATES: RwLock<[ElementState; NUM_KEYS]> =
     RwLock::new([ElementState::Released; NUM_KEYS]);
 
-lazy_static::lazy_static! {
-    static ref WINIT_INPUT_HELPER: RwLock<WinitInputHelper> = RwLock::new(WinitInputHelper::new());
-}
+static WINIT_INPUT_HELPER: Lazy<RwLock<WinitInputHelper>> =
+    Lazy::new(|| RwLock::new(WinitInputHelper::new()));
 
 pub fn input() -> &'static RwLock<WinitInputHelper> {
     &WINIT_INPUT_HELPER

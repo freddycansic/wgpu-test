@@ -1,5 +1,9 @@
+use std::sync::RwLock;
+
 use anyhow::Result;
 use egui_winit_platform::PlatformDescriptor;
+use once_cell::sync::Lazy;
+use once_cell::sync::OnceCell;
 
 pub enum GuiEvent {
     RequestRedraw,
@@ -18,18 +22,35 @@ impl epi::backend::RepaintSignal for RepaintSignal {
     }
 }
 
+pub struct GuiState {}
+
 pub struct Gui {
-    pub render_pass: egui_wgpu_backend::RenderPass,
-    pub platform: egui_winit_platform::Platform,
-    pub demo_app: egui_demo_lib::DemoWindows,
+    pub render_pass: OnceCell<egui_wgpu_backend::RenderPass>,
+    pub platform: OnceCell<egui_winit_platform::Platform>,
+    pub state: GuiState,
+}
+
+static GUI: Lazy<RwLock<Gui>> = Lazy::new(|| RwLock::new(Gui::new()));
+
+pub fn gui() -> &'static RwLock<Gui> {
+    &GUI
 }
 
 impl Gui {
-    pub fn new(
+    pub fn new() -> Self {
+        Self {
+            render_pass: OnceCell::new(),
+            platform: OnceCell::new(),
+            state: GuiState {},
+        }
+    }
+
+    pub fn create(
+        &mut self,
         device: &wgpu::Device,
         surface_config: &wgpu::SurfaceConfiguration,
         window: &winit::window::Window,
-    ) -> Self {
+    ) -> Result<()> {
         let platform = egui_winit_platform::Platform::new(PlatformDescriptor {
             physical_width: surface_config.width,
             physical_height: surface_config.height,
@@ -40,58 +61,90 @@ impl Gui {
 
         let render_pass = egui_wgpu_backend::RenderPass::new(device, surface_config.format, 1);
 
-        let demo_app = egui_demo_lib::DemoWindows::default();
+        self.platform.set(platform).map_err(|_| {
+            anyhow::anyhow!("OnceCell: Could not create Gui, platform already set.")
+        })?;
+        self.render_pass.set(render_pass).map_err(|_| {
+            anyhow::anyhow!("OnceCell: Could not create Gui, render_pass already set.")
+        })?;
 
-        Self {
-            platform,
-            render_pass,
-            demo_app,
-        }
+        Ok(())
     }
 
     pub fn render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        config: &wgpu::SurfaceConfiguration,
-        window: &winit::window::Window,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        state: &mut crate::State,
     ) -> Result<()> {
-        self.platform.begin_frame();
+        self.platform.get_mut().unwrap().begin_frame();
 
-        self.show();
+        self.show(state);
 
-        let full_output = self.platform.end_frame(Some(window));
-        let paint_jobs = self.platform.context().tessellate(full_output.shapes);
+        let full_output = self
+            .platform
+            .get_mut()
+            .unwrap()
+            .end_frame(Some(&state.window));
+        let paint_jobs = self
+            .platform
+            .get()
+            .unwrap()
+            .context()
+            .tessellate(full_output.shapes);
 
         let screen_descriptor = egui_wgpu_backend::ScreenDescriptor {
-            physical_width: config.width,
-            physical_height: config.height,
-            scale_factor: window.scale_factor() as f32,
+            physical_width: state.config.width,
+            physical_height: state.config.height,
+            scale_factor: state.window.scale_factor() as f32,
         };
 
         let textures_delta = full_output.textures_delta;
 
-        self.render_pass
-            .add_textures(device, queue, &textures_delta)?;
+        self.render_pass.get_mut().unwrap().add_textures(
+            &state.device,
+            &state.queue,
+            &textures_delta,
+        )?;
+
+        self.render_pass.get_mut().unwrap().update_buffers(
+            &state.device,
+            &state.queue,
+            &paint_jobs,
+            &screen_descriptor,
+        );
+        self.render_pass.get().unwrap().execute(
+            encoder,
+            &view,
+            &paint_jobs,
+            &screen_descriptor,
+            None,
+        )?;
 
         self.render_pass
-            .update_buffers(device, queue, &paint_jobs, &screen_descriptor);
-        self.render_pass
-            .execute(encoder, &view, &paint_jobs, &screen_descriptor, None)?;
-
-        self.render_pass.remove_textures(textures_delta)?;
+            .get_mut()
+            .unwrap()
+            .remove_textures(textures_delta)?;
 
         Ok(())
     }
 
-    pub fn show(&mut self) {
-        egui::SidePanel::left("Hello")
-            .default_width(100.0)
-            .show(&self.platform.context(), |ui| {
-                todo!("match deltatime and go red if fps < 60")
+    pub fn handle_event<T>(&mut self, winit_event: &winit::event::Event<T>) {
+        self.platform.get_mut().unwrap().handle_event(winit_event)
+    }
+
+    pub fn show(&mut self, state: &mut crate::State) {
+        egui::SidePanel::left("Hello").default_width(100.0).show(
+            &self.platform.get().unwrap().context(),
+            |ui| {
+                let color = match state.time.delta {
+                    _ => egui::Color32::WHITE,
+                };
+
+                ui.colored_label(color, state.time.delta.as_micros().to_string());
+                // todo!("match deltatime and go red if fps < 60")
                 // ui.label(egui::RichText::text(&self))
-            });
+            },
+        );
     }
 }

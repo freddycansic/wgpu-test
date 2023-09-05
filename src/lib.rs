@@ -206,7 +206,7 @@ struct Time {
     delta: instant::Duration,
 }
 
-struct State {
+pub struct State {
     surface: wgpu::Surface,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -223,7 +223,6 @@ struct State {
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
     time: Time,
-    gui: gui::Gui,
 }
 
 impl State {
@@ -461,8 +460,6 @@ impl State {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
-        let gui = gui::Gui::new(&device, &config, &window);
-
         Self {
             surface,
             device,
@@ -482,9 +479,8 @@ impl State {
             time: Time {
                 start: instant::Instant::now(),
                 current: instant::Duration::default(),
-                delta: instant::Duration::default()
+                delta: instant::Duration::default(),
             },
-            gui,
         }
     }
 
@@ -509,9 +505,9 @@ impl State {
 
     // called per frame
     fn update(&mut self) {
-        self.gui
-            .platform
-            .update_time(self.time.current.as_secs_f64());
+        // self.gui
+        //     .platform
+        //     .update_time(self.time.current.as_secs_f64());
 
         self.queue.write_buffer(
             &self.view_projection_buffer,
@@ -602,14 +598,10 @@ impl State {
             render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
         }
 
-        self.gui.render(
-            &mut encoder,
-            &view,
-            &self.config,
-            &self.window,
-            &self.device,
-            &self.queue,
-        )?;
+        gui::gui()
+            .write()
+            .unwrap()
+            .render(&mut encoder, &view, self)?;
 
         // submit to render queue
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -653,9 +645,14 @@ pub async fn run() {
     }
 
     let mut state = State::new(window).await;
+    gui::gui()
+        .write()
+        .unwrap()
+        .create(&state.device, &state.config, &state.window)
+        .unwrap();
 
     event_loop.run(move |event, _, control_flow| {
-        state.gui.platform.handle_event(&event);
+        gui::gui().write().unwrap().handle_event(&event);
         input::update_input_state(&event);
 
         match event {
