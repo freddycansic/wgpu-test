@@ -14,7 +14,7 @@ pub fn input() -> &'static RwLock<WinitInputHelper> {
     &WINIT_INPUT_HELPER
 }
 
-pub fn update_input_state(event: &Event<()>) {
+pub fn update_input_state(event: &Event<crate::gui::GuiEvent>) {
     WINIT_INPUT_HELPER.write().unwrap().update(event);
 
     if let Event::WindowEvent { ref event, .. } = event {

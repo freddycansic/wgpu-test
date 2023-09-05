@@ -1,3 +1,4 @@
+mod gui;
 mod input;
 mod texture;
 
@@ -7,13 +8,9 @@ use cgmath as cg;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+use anyhow::Result;
 use wgpu::util::DeviceExt;
-use winit::{
-    event::*,
-    event_loop::{ControlFlow, EventLoop},
-    window::Window,
-    window::WindowBuilder,
-};
+use winit::{event::*, event_loop::ControlFlow, window::Window, window::WindowBuilder};
 
 use input::{input, ContinuousKeyPresses};
 use texture::Texture;
@@ -71,7 +68,6 @@ impl Camera {
         let left = forward.cross(self.up).normalize();
         let speed = 0.05;
 
-        // :(
         if input().read().unwrap().key_down(VirtualKeyCode::W) {
             self.position += forward * speed;
         }
@@ -159,13 +155,25 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
 
+const NUM_INSTANCES_PER_ROW: u32 = 10;
+
+#[derive(Clone)]
 struct Instance {
     position: cg::Vector3<f32>,
     rotation: cg::Quaternion<f32>,
 }
 
+impl Default for Instance {
+    fn default() -> Self {
+        Self {
+            position: cg::Vector3::zero(),
+            rotation: cg::Quaternion::zero(),
+        }
+    }
+}
+
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct InstanceRaw([[f32; 4]; 4]);
 
 impl InstanceRaw {
@@ -192,6 +200,12 @@ impl From<&Instance> for InstanceRaw {
     }
 }
 
+struct Time {
+    start: instant::Instant,
+    current: instant::Duration,
+    delta: instant::Duration,
+}
+
 struct State {
     surface: wgpu::Surface,
     device: wgpu::Device,
@@ -208,8 +222,8 @@ struct State {
     view_projection_bind_group: wgpu::BindGroup,
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
-    start_time: instant::Instant,
-    current_time: instant::Duration,
+    time: Time,
+    gui: gui::Gui,
 }
 
 impl State {
@@ -439,34 +453,15 @@ impl State {
             multiview: None,
         });
 
-        const NUM_INSTANCES_PER_ROW: u32 = 10;
-
-        let instances = (0..NUM_INSTANCES_PER_ROW)
-            .flat_map(|z| {
-                (0..NUM_INSTANCES_PER_ROW).map(move |x| Instance {
-                    position: cg::Vector3 {
-                        x: x as f32,
-                        y: 0.0,
-                        z: z as f32,
-                    },
-                    rotation: cg::Quaternion::from_angle_x(cg::Deg(0.0)),
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let instance_data = instances
-            .iter()
-            .map(InstanceRaw::from)
-            .collect::<Vec<InstanceRaw>>();
-
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Instance Buffer"),
-            contents: bytemuck::cast_slice(&instance_data),
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("instance_buffer"),
+            mapped_at_creation: false,
+            size: std::mem::size_of::<[InstanceRaw; NUM_INSTANCES_PER_ROW.pow(2) as usize]>()
+                as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
-        let start_time = instant::Instant::now();
-        let current_time = start_time.elapsed();
+        let gui = gui::Gui::new(&device, &config, &window);
 
         Self {
             surface,
@@ -482,10 +477,14 @@ impl State {
             camera,
             view_projection_buffer,
             view_projection_bind_group,
-            instances,
+            instances: vec![Instance::default(); NUM_INSTANCES_PER_ROW.pow(2) as usize],
             instance_buffer,
-            start_time,
-            current_time,
+            time: Time {
+                start: instant::Instant::now(),
+                current: instant::Duration::default(),
+                delta: instant::Duration::default()
+            },
+            gui,
         }
     }
 
@@ -510,7 +509,9 @@ impl State {
 
     // called per frame
     fn update(&mut self) {
-        self.current_time = self.start_time.elapsed();
+        self.gui
+            .platform
+            .update_time(self.time.current.as_secs_f64());
 
         self.queue.write_buffer(
             &self.view_projection_buffer,
@@ -518,13 +519,12 @@ impl State {
             bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().to_uniform()]),
         );
 
-        const NUM_INSTANCES_PER_ROW: u32 = 10;
         self.instances = (0..NUM_INSTANCES_PER_ROW)
             .flat_map(|x| {
                 let num_instances = NUM_INSTANCES_PER_ROW as f32;
                 let pi = std::f32::consts::PI;
                 let angle = x as f32 / num_instances * pi * 2.0; // between 0 and 2pi
-                let angle = (angle + self.current_time.as_secs_f32()) % (pi * 2.0); // shift period by time
+                let angle = (angle + self.time.current.as_secs_f32()) % (pi * 2.0); // shift period by time
                 let y = angle.sin() * 2.0;
 
                 (0..NUM_INSTANCES_PER_ROW).map(move |z| Instance {
@@ -553,7 +553,7 @@ impl State {
         self.camera.update_position();
     }
 
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    fn render(&mut self) -> Result<()> {
         // wait for surface to provide a new SurfaceTexture to write on
         let output = self.surface.get_current_texture()?;
 
@@ -602,6 +602,15 @@ impl State {
             render_pass.draw_indexed(0..INDICES.len() as u32, 0, 0..self.instances.len() as u32);
         }
 
+        self.gui.render(
+            &mut encoder,
+            &view,
+            &self.config,
+            &self.window,
+            &self.device,
+            &self.queue,
+        )?;
+
         // submit to render queue
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
@@ -621,7 +630,8 @@ pub async fn run() {
         }
     }
 
-    let event_loop = EventLoop::new();
+    let event_loop =
+        winit::event_loop::EventLoopBuilder::<gui::GuiEvent>::with_user_event().build();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
 
     #[cfg(target_arch = "wasm32")]
@@ -645,6 +655,7 @@ pub async fn run() {
     let mut state = State::new(window).await;
 
     event_loop.run(move |event, _, control_flow| {
+        state.gui.platform.handle_event(&event);
         input::update_input_state(&event);
 
         match event {
@@ -675,16 +686,31 @@ pub async fn run() {
                 }
             }
             Event::RedrawRequested(window_id) if window_id == state.window().id() => {
+                state.time.current = state.time.start.elapsed();
+
                 state.update();
                 match state.render() {
                     Ok(_) => {}
                     // reconfigure the surface if lost
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-                    Err(e) => eprintln!("{:?}", e),
+                    Err(err) if err.downcast_ref::<wgpu::SurfaceError>().is_some() => {
+                        let surface_error = err.downcast_ref::<wgpu::SurfaceError>().unwrap();
+                        match surface_error {
+                            wgpu::SurfaceError::Lost => state.resize(state.size),
+                            _ => {
+                                eprintln!("{:?}", surface_error);
+                                *control_flow = ControlFlow::Exit;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("{:?}", err);
+                        *control_flow = ControlFlow::Exit
+                    }
                 }
+
+                state.time.delta = state.time.start.elapsed() - state.time.current;
             }
-            Event::MainEventsCleared => {
+            Event::MainEventsCleared | Event::UserEvent(gui::GuiEvent::RequestRedraw) => {
                 state.window().request_redraw();
             }
             _ => {}

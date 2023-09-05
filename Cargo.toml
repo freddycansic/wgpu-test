@@ -16,7 +16,13 @@ anyhow = "1.0.75"
 bytemuck = { version = "1.13.1", features = ["derive"] }
 cfg-if = "1.0.0"
 cgmath = "0.18.0"
+egui = "0.22.0"
+egui-wgpu = { version = "0.22.0", features = ["winit"] }
+egui_demo_lib = "0.22.0"
+egui_wgpu_backend = "0.25.0"
+egui_winit_platform = { version = "0.19.0", features = ["webbrowser", "clipboard"] }
 env_logger = "0.10.0"
+epi = "0.17.0"
 instant = "0.1"
 lazy_static = "1.4.0"
 log = "0.4.20"
