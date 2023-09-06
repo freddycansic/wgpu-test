@@ -134,17 +134,21 @@ impl Gui {
     }
 
     pub fn show(&mut self, state: &mut crate::State) {
-        egui::SidePanel::left("Hello").default_width(100.0).show(
-            &self.platform.get().unwrap().context(),
-            |ui| {
-                let color = match state.time.delta {
+        egui::Window::new("performance-window")
+            .title_bar(false)
+            .show(&self.platform.get().unwrap().context(), |ui| {
+                let color = match state.fps {
+                    fps if fps < 60.0 => egui::Color32::RED,
+                    fps if fps < 144.0 => egui::Color32::YELLOW,
                     _ => egui::Color32::WHITE,
                 };
 
-                ui.colored_label(color, state.time.delta.as_micros().to_string());
-                // todo!("match deltatime and go red if fps < 60")
-                // ui.label(egui::RichText::text(&self))
-            },
-        );
+                let text = format!(
+                    "{:.1} FPS\n{:.2} ms",
+                    state.fps,
+                    state.time.delta.as_micros() as f32 / 1000.0
+                );
+                ui.colored_label(color, text);
+            });
     }
 }

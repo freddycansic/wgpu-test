@@ -63,39 +63,39 @@ impl Camera {
         OPENGL_TO_WGPU_MATRIX * projection * view
     }
 
-    fn update_position(&mut self) {
+    fn update_position(&mut self, delta: instant::Duration) {
         let forward = self.direction.normalize();
-        let left = forward.cross(self.up).normalize();
-        let speed = 0.05;
+        let right = forward.cross(self.up).normalize();
+        let speed = 10.0;
 
         if input().read().unwrap().key_down(VirtualKeyCode::W) {
-            self.position += forward * speed;
+            self.position += forward * speed * delta.as_secs_f32();
         }
 
         if input().read().unwrap().key_down(VirtualKeyCode::S) {
-            self.position -= forward * speed;
+            self.position -= forward * speed * delta.as_secs_f32();
         }
 
         if input().read().unwrap().key_down(VirtualKeyCode::A) {
-            self.position -= left * speed;
+            self.position -= right * speed * delta.as_secs_f32();
         }
 
         if input().read().unwrap().key_down(VirtualKeyCode::D) {
-            self.position += left * speed;
+            self.position += right * speed * delta.as_secs_f32();
         }
     }
 
-    fn update_direction(&mut self) {
+    fn update_direction(&mut self, delta: instant::Duration) {
         let mouse_diff = input().read().unwrap().mouse_diff();
 
         if mouse_diff == (0.0, 0.0) {
             return;
         }
 
-        let sensitivity = 0.01;
+        let sensitivity = 1.5;
 
-        self.yaw += mouse_diff.0 * sensitivity;
-        self.pitch += mouse_diff.1 * sensitivity;
+        self.yaw += mouse_diff.0 * sensitivity * delta.as_secs_f32();
+        self.pitch += mouse_diff.1 * sensitivity * delta.as_secs_f32();
 
         let pi = std::f32::consts::PI;
         self.pitch = self.pitch.clamp(-pi / 2.0, pi / 2.0);
@@ -217,12 +217,14 @@ pub struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     texture_bind_group: wgpu::BindGroup,
+    depth_texture: Texture,
     camera: Camera,
     view_projection_buffer: wgpu::Buffer,
     view_projection_bind_group: wgpu::BindGroup,
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
     time: Time,
+    fps: f32,
 }
 
 impl State {
@@ -298,6 +300,8 @@ impl State {
             Some("passport-photo.jpg"),
         )
         .unwrap();
+
+        let depth_texture = Texture::create_depth_texture(&device, &config, Some("depth-texture"));
 
         // bind group describes a set of resources and how they can be accessed by the shaders
         let texture_bind_group_layout =
@@ -442,7 +446,13 @@ impl State {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: Texture::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -471,6 +481,7 @@ impl State {
             vertex_buffer,
             index_buffer,
             texture_bind_group,
+            depth_texture,
             camera,
             view_projection_buffer,
             view_projection_bind_group,
@@ -481,6 +492,7 @@ impl State {
                 current: instant::Duration::default(),
                 delta: instant::Duration::default(),
             },
+            fps: 0.0,
         }
     }
 
@@ -496,11 +508,13 @@ impl State {
         self.config.width = new_size.width;
         self.config.height = new_size.height;
         self.surface.configure(&self.device, &self.config);
+
+        self.depth_texture = Texture::create_depth_texture(&self.device, &self.config, Some("depth-texture"));
     }
 
     // called per event
-    fn process_events(&mut self, event: &WindowEvent) {
-        self.camera.update_direction();
+    fn process_window_event(&mut self, _event: &WindowEvent) {
+        self.camera.update_direction(self.time.delta);
     }
 
     // called per frame
@@ -546,7 +560,7 @@ impl State {
             bytemuck::cast_slice(&instance_data),
         );
 
-        self.camera.update_position();
+        self.camera.update_position(self.time.delta);
     }
 
     fn render(&mut self) -> Result<()> {
@@ -584,7 +598,14 @@ impl State {
                         store: true,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: true
+                    }),
+                    stencil_ops: None
+                }),
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
@@ -660,7 +681,7 @@ pub async fn run() {
                 ref event,
                 window_id,
             } if window_id == state.window().id() => {
-                state.process_events(event);
+                state.process_window_event(event);
 
                 match event {
                     WindowEvent::CloseRequested
@@ -684,6 +705,7 @@ pub async fn run() {
             }
             Event::RedrawRequested(window_id) if window_id == state.window().id() => {
                 state.time.current = state.time.start.elapsed();
+                state.fps = 1.0 / state.time.delta.as_secs_f32();
 
                 state.update();
                 match state.render() {
