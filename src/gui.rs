@@ -115,7 +115,7 @@ impl Gui {
         );
         self.render_pass.get().unwrap().execute(
             encoder,
-            &view,
+            view,
             &paint_jobs,
             &screen_descriptor,
             None,

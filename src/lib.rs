@@ -1,6 +1,7 @@
 mod gui;
 mod input;
 mod texture;
+mod camera;
 
 use cg::prelude::*;
 use cgmath as cg;
@@ -12,17 +13,7 @@ use anyhow::Result;
 use wgpu::util::DeviceExt;
 use winit::{event::*, event_loop::ControlFlow, window::Window, window::WindowBuilder};
 
-use input::{input, ContinuousKeyPresses};
 use texture::Texture;
-
-// opengl NDC has z dimension from -1 to 1, wgpu has it from 0 to 1
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.5,
-    0.0, 0.0, 0.0, 1.0,
-);
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -35,77 +26,6 @@ trait ToUniform<T: bytemuck::Pod + bytemuck::Zeroable> {
 impl ToUniform<MatrixUniform> for cg::Matrix4<f32> {
     fn to_uniform(self) -> MatrixUniform {
         MatrixUniform(self.into())
-    }
-}
-
-struct Camera {
-    position: cg::Point3<f32>,
-    direction: cg::Vector3<f32>,
-    yaw: f32,
-    pitch: f32,
-    up: cg::Vector3<f32>,
-    aspect_ratio: f32,
-    fov: f32,
-    z_near: f32,
-    z_far: f32,
-}
-
-impl Camera {
-    fn build_view_projection_matrix(&self) -> cg::Matrix4<f32> {
-        let view = cg::Matrix4::look_at_rh(self.position, self.position + self.direction, self.up);
-        let projection = cg::perspective(
-            cg::Deg(self.fov),
-            self.aspect_ratio,
-            self.z_near,
-            self.z_far,
-        );
-
-        OPENGL_TO_WGPU_MATRIX * projection * view
-    }
-
-    fn update_position(&mut self, delta: instant::Duration) {
-        let forward = self.direction.normalize();
-        let right = forward.cross(self.up).normalize();
-        let speed = 10.0;
-
-        if input().read().unwrap().key_down(VirtualKeyCode::W) {
-            self.position += forward * speed * delta.as_secs_f32();
-        }
-
-        if input().read().unwrap().key_down(VirtualKeyCode::S) {
-            self.position -= forward * speed * delta.as_secs_f32();
-        }
-
-        if input().read().unwrap().key_down(VirtualKeyCode::A) {
-            self.position -= right * speed * delta.as_secs_f32();
-        }
-
-        if input().read().unwrap().key_down(VirtualKeyCode::D) {
-            self.position += right * speed * delta.as_secs_f32();
-        }
-    }
-
-    fn update_direction(&mut self, delta: instant::Duration) {
-        let mouse_diff = input().read().unwrap().mouse_diff();
-
-        if mouse_diff == (0.0, 0.0) {
-            return;
-        }
-
-        let sensitivity = 1.5;
-
-        self.yaw += mouse_diff.0 * sensitivity * delta.as_secs_f32();
-        self.pitch += mouse_diff.1 * sensitivity * delta.as_secs_f32();
-
-        let pi = std::f32::consts::PI;
-        self.pitch = self.pitch.clamp(-pi / 2.0, pi / 2.0);
-
-        self.direction = cg::Vector3 {
-            x: self.yaw.cos() * self.pitch.cos(),
-            y: -self.pitch.sin(),
-            z: self.yaw.sin() * self.pitch.cos(),
-        }
-        .normalize();
     }
 }
 
@@ -218,7 +138,7 @@ pub struct State {
     index_buffer: wgpu::Buffer,
     texture_bind_group: wgpu::BindGroup,
     depth_texture: Texture,
-    camera: Camera,
+    camera: camera::Camera,
     view_projection_buffer: wgpu::Buffer,
     view_projection_bind_group: wgpu::BindGroup,
     instances: Vec<Instance>,
@@ -344,7 +264,7 @@ impl State {
             ],
         });
 
-        let camera = Camera {
+        let camera = camera::Camera {
             position: (0.0, 2.0, 2.0).into(),
             direction: -cg::Vector3::unit_z(),
             pitch: 0.0,
