@@ -1,5 +1,5 @@
-use cgmath as cg;
 use cg::prelude::*;
+use cgmath as cg;
 use winit::event::VirtualKeyCode;
 
 use crate::input::{input, ContinuousKeyPresses};

@@ -1,3 +1,5 @@
+use crate::resources;
+
 use anyhow::Result;
 use image::GenericImageView;
 
@@ -8,6 +10,16 @@ pub struct Texture {
 }
 
 impl Texture {
+    pub fn from_path(
+        path: &str,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: Option<&str>,
+    ) -> Result<Self> {
+        let data = resources::load_binary(path)?;
+        Self::from_bytes(&data, device, queue, label)
+    }
+
     pub fn from_bytes(
         bytes: &[u8],
         device: &wgpu::Device,
