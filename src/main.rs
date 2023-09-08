@@ -339,7 +339,10 @@ impl State {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
-        let model = Model::load("cube.obj", &device, &queue, &texture_bind_group_layout).unwrap();
+        let model = match Model::load("assets/cube.obj", &device, &queue, &texture_bind_group_layout) {
+            Ok(model) => model,
+            Err(err) => panic!("{}", err)
+        };
 
         Self {
             surface,
@@ -501,6 +504,8 @@ impl State {
 }
 
 pub fn main() {
+    println!("{}", std::env::current_dir().unwrap().display());
+
     env_logger::init();
 
     let event_loop =

@@ -25,7 +25,7 @@ impl ModelVertex {
 impl BufferContents for ModelVertex {
     fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Self>() as u64,
+            array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &Self::MODEL_VERTEX_ATTRIBUTES,
         }

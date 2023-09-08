@@ -3,7 +3,7 @@
     "configurations": [
         {
             "name": "Windows",
-            "program": "${workspaceRoot}/target/debug/shooter-game-run",
+            "program": "${workspaceRoot}/target/debug/shooter-game",
             "type": "cppvsdbg",
             "request": "launch",
             "preLaunchTask": "rust: cargo build",
