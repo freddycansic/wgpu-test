@@ -6,7 +6,7 @@ use crate::input::{input, ContinuousKeyPresses};
 
 // opengl NDC has z dimension from -1 to 1, wgpu has it from 0 to 1
 #[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
+const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
     1.0, 0.0, 0.0, 0.0,
     0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 0.5, 0.5,
@@ -62,10 +62,6 @@ impl Camera {
 
     pub fn update_direction(&mut self, delta: instant::Duration) {
         let mouse_diff = input().read().unwrap().mouse_diff();
-
-        if mouse_diff == (0.0, 0.0) {
-            return;
-        }
 
         let sensitivity = 1.5;
 

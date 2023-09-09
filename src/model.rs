@@ -1,9 +1,9 @@
-use std::{io::{BufReader, Cursor}, ops::Range};
+use std::ops::Range;
 
-use anyhow::Result;
+use color_eyre::Result;
 use wgpu::util::DeviceExt;
 
-use crate::{resources, texture::Texture};
+use crate::texture::Texture;
 
 pub trait BufferContents {
     fn buffer_layout() -> wgpu::VertexBufferLayout<'static>;
@@ -67,10 +67,21 @@ impl Model {
             },
         )?;
 
+        log::info!("Loaded model \"{}\"", path);
+
         let materials = model_materials?
             .into_iter()
             .map(|material| {
-                let diffuse_texture_path = material.diffuse_texture.ok_or_else(|| anyhow::anyhow!("No diffuse texture found"))?;
+                let diffuse_texture_path = match material.diffuse_texture {
+                    Some(texture_path) => texture_path,
+                    None => {
+                        log::warn!(
+                            "No diffuse texture found for model \"{}\", loading default texture.",
+                            path
+                        );
+                        "default.png".to_string()
+                    }
+                };
 
                 let diffuse_texture = Texture::from_path(
                     &diffuse_texture_path,
@@ -78,6 +89,8 @@ impl Model {
                     queue,
                     Some(diffuse_texture_path.as_str()),
                 )?;
+
+                log::info!("Loaded diffuse texture \"{}\"", diffuse_texture_path);
 
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     layout,
@@ -102,25 +115,23 @@ impl Model {
             })
             .collect::<Result<Vec<Material>>>()?;
 
-            let meshes = models
+        let meshes = models
             .into_iter()
             .map(|model| {
-                let vertices = (0..model.mesh.positions.len() / 3)
-                    .map(|i| ModelVertex {
-                        position: [
-                            model.mesh.positions[i * 3],
-                            model.mesh.positions[i * 3 + 1],
-                            model.mesh.positions[i * 3 + 2],
-                        ],
-                        texture_coords: [model.mesh.texcoords[i * 2], model.mesh.texcoords[i * 2 + 1]],
-                        normal: [
-                            model.mesh.normals[i * 3],
-                            model.mesh.normals[i * 3 + 1],
-                            model.mesh.normals[i * 3 + 2],
-                        ],
+                let positions_chunks = model.mesh.positions.chunks(3);
+                let texcoords_chunks = model.mesh.texcoords.chunks(2);
+                let normals_chunks = model.mesh.normals.chunks(3);
+
+                let vertices = positions_chunks
+                    .zip(texcoords_chunks)
+                    .zip(normals_chunks)
+                    .map(|((pos, tex), norm)| ModelVertex {
+                        position: [pos[0], pos[1], pos[2]],
+                        texture_coords: [tex[0], tex[1]],
+                        normal: [norm[0], norm[1], norm[2]],
                     })
-                    .collect::<Vec<_>>();
-    
+                    .collect::<Vec<ModelVertex>>();
+
                 let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(&format!("{:?} Vertex Buffer", path)),
                     contents: bytemuck::cast_slice(&vertices),
@@ -131,7 +142,7 @@ impl Model {
                     contents: bytemuck::cast_slice(&model.mesh.indices),
                     usage: wgpu::BufferUsages::INDEX,
                 });
-    
+
                 Mesh {
                     name: path.to_string(),
                     vertex_buffer,
@@ -151,9 +162,10 @@ pub trait DrawModel<'a> {
     fn draw_mesh_instanced(&mut self, mesh: &'a Mesh, instances: Range<u32>);
 }
 
-impl <'a, 'b> DrawModel<'b> for wgpu::RenderPass<'a>
+impl<'a, 'b> DrawModel<'b> for wgpu::RenderPass<'a>
 // b lives at least as long as a
-where 'b: 'a 
+where
+    'b: 'a,
 {
     fn draw_mesh(&mut self, mesh: &'b Mesh) {
         self.draw_mesh_instanced(mesh, 0..1)

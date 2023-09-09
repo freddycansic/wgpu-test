@@ -1,10 +1,11 @@
 use std::sync::RwLock;
 
-use anyhow::Result;
+use color_eyre::eyre::{eyre, Result};
 use egui_winit_platform::PlatformDescriptor;
 use once_cell::sync::Lazy;
 use once_cell::sync::OnceCell;
 
+#[derive(Debug)]
 pub enum GuiEvent {
     RequestRedraw,
 }
@@ -61,12 +62,12 @@ impl Gui {
 
         let render_pass = egui_wgpu_backend::RenderPass::new(device, surface_config.format, 1);
 
-        self.platform.set(platform).map_err(|_| {
-            anyhow::anyhow!("OnceCell: Could not create Gui, platform already set.")
-        })?;
-        self.render_pass.set(render_pass).map_err(|_| {
-            anyhow::anyhow!("OnceCell: Could not create Gui, render_pass already set.")
-        })?;
+        self.platform
+            .set(platform)
+            .map_err(|_| eyre!("OnceCell: Could not create Gui, platform already set."))?;
+        self.render_pass
+            .set(render_pass)
+            .map_err(|_| eyre!("OnceCell: Could not create Gui, render_pass already set."))?;
 
         Ok(())
     }
@@ -81,11 +82,20 @@ impl Gui {
 
         self.show(state);
 
+        if !state.cursor_visible {
+            self.platform
+                .get()
+                .unwrap()
+                .context()
+                .set_cursor_icon(egui::CursorIcon::None);
+        }
+
         let full_output = self
             .platform
             .get_mut()
             .unwrap()
             .end_frame(Some(&state.window));
+
         let paint_jobs = self
             .platform
             .get()

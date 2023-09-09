@@ -8,12 +8,12 @@ mod texture;
 use cg::prelude::*;
 use cgmath as cg;
 
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
-use anyhow::Result;
+use color_eyre::Result;
+use fern::colors::Color;
 use wgpu::util::DeviceExt;
-use winit::{event::*, event_loop::ControlFlow, window::Window, window::WindowBuilder};
+use winit::{
+    dpi::PhysicalPosition, event::*, event_loop::ControlFlow, window::Window, window::WindowBuilder,
+};
 
 use model::{BufferContents, DrawModel, Model};
 use texture::Texture;
@@ -32,7 +32,7 @@ impl ToUniform<MatrixUniform> for cg::Matrix4<f32> {
     }
 }
 
-const NUM_INSTANCES_PER_ROW: u32 = 10;
+const NUM_INSTANCES_PER_ROW: u32 = 20;
 
 #[derive(Clone)]
 struct Instance {
@@ -102,7 +102,8 @@ pub struct State {
     instance_buffer: wgpu::Buffer,
     time: Time,
     fps: f32,
-    model: Model
+    model: Model,
+    cursor_visible: bool,
 }
 
 impl State {
@@ -175,7 +176,7 @@ impl State {
             include_bytes!("../assets/happy-tree.png"),
             &device,
             &queue,
-            Some("passport-photo.jpg"),
+            Some("happy-tree.png"),
         )
         .unwrap();
 
@@ -332,17 +333,20 @@ impl State {
         });
 
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("instance_buffer"),
+            label: Some("instance-buffer"),
             mapped_at_creation: false,
             size: std::mem::size_of::<[InstanceRaw; NUM_INSTANCES_PER_ROW.pow(2) as usize]>()
                 as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
-        let model = match Model::load("assets/cube.obj", &device, &queue, &texture_bind_group_layout) {
-            Ok(model) => model,
-            Err(err) => panic!("{}", err)
-        };
+        let model = Model::load(
+            "torus_high_poly.obj",
+            &device,
+            &queue,
+            &texture_bind_group_layout,
+        )
+        .unwrap();
 
         Self {
             surface,
@@ -366,6 +370,7 @@ impl State {
                 delta: instant::Duration::default(),
             },
             fps: 0.0,
+            cursor_visible: false,
         }
     }
 
@@ -387,16 +392,64 @@ impl State {
     }
 
     // called per event
-    fn process_window_event(&mut self, _event: &WindowEvent) {
-        self.camera.update_direction(self.time.delta);
+    fn process_window_event(&mut self, event: &WindowEvent, control_flow: &mut ControlFlow) {
+        if input::input()
+            .read()
+            .unwrap()
+            .key_released(VirtualKeyCode::G)
+        {
+            self.cursor_visible = !self.cursor_visible;
+        }
+
+        match event {
+            WindowEvent::CloseRequested
+            | WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(VirtualKeyCode::Escape),
+                        ..
+                    },
+                ..
+            } => *control_flow = ControlFlow::Exit,
+            WindowEvent::Resized(physical_size) => {
+                self.resize(*physical_size);
+            }
+            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                self.resize(**new_inner_size);
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let center =
+                    cg::Point2::new((self.size.width / 2) as f32, (self.size.height / 2) as f32);
+
+                let mouse_diff = input::input().read().unwrap().mouse_diff();
+                let mouse_diff = cg::Vector2::new(mouse_diff.0, mouse_diff.1);
+
+                // if the mouse movement is greater than the distance from the edge of the screen to the center
+                if mouse_diff.magnitude() >= center.y.min(center.x) * 0.90 {
+                    // catch cursor moving back to the center and ignore the event
+                    return;
+                }
+
+                self.camera.update_direction(self.time.delta);
+
+                if position.x == 0.0
+                    || position.x == (self.size.width - 1) as f64
+                    || position.y == 0.0
+                    || position.y == (self.size.height - 1) as f64
+                {
+                    // return cursor back to the center
+                    self.window
+                        .set_cursor_position(PhysicalPosition::new(center.x, center.y))
+                        .unwrap();
+                }
+            }
+            _ => {}
+        }
     }
 
     // called per frame
     fn update(&mut self) {
-        // self.gui
-        //     .platform
-        //     .update_time(self.time.current.as_secs_f64());
-
         self.queue.write_buffer(
             &self.view_projection_buffer,
             0,
@@ -413,9 +466,9 @@ impl State {
 
                 (0..NUM_INSTANCES_PER_ROW).map(move |z| Instance {
                     position: cg::Vector3 {
-                        x: x as f32,
-                        y,
-                        z: z as f32,
+                        x: x as f32 * 2.5,
+                        y: y * 3.0,
+                        z: z as f32 * 2.5,
                     },
                     rotation: cg::Quaternion::from_angle_x(cg::Deg(0.0)),
                 })
@@ -450,13 +503,13 @@ impl State {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
+                label: Some("render-encoder"),
             });
 
         // begin_render_pass returns a render pass with the same lifetime as the encoder, since the encoder is borrowed mutably for this function it cannot be borrowed later on as immutable unless the render pass is dropped and the reference dropped, hence the limiting scope
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("render-pass"),
                 // where to draw color to
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -487,6 +540,7 @@ impl State {
             render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
             render_pass.set_bind_group(1, &self.view_projection_bind_group, &[]);
             // rendering
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.draw_mesh_instanced(&self.model.meshes[0], 0..self.instances.len() as u32);
         }
 
@@ -503,10 +557,32 @@ impl State {
     }
 }
 
-pub fn main() {
-    println!("{}", std::env::current_dir().unwrap().display());
+pub fn main() -> Result<()> {
+    let log_colors = fern::colors::ColoredLevelConfig::new()
+        .error(Color::Red)
+        .warn(Color::Yellow)
+        .info(Color::Blue);
 
-    env_logger::init();
+    fern::Dispatch::new()
+        .format(move |out, message, record| {
+            out.finish(format_args!(
+                "[{} {} {}] {}",
+                chrono::Local::now().format("%H:%M:%S").to_string(),
+                log_colors.color(record.level()),
+                record.target(),
+                message
+            ))
+        })
+        .level(log::LevelFilter::Error)
+        .level_for("shooter_game", log::LevelFilter::Trace)
+        .chain(std::io::stdout())
+        .apply()?;
+
+    color_eyre::install()?;
+
+    std::env::set_current_dir(std::path::Path::new("assets")).unwrap();
+    let working_directory = std::env::current_dir().unwrap();
+    log::info!("Working directory \"{}\"", working_directory.display());
 
     let event_loop =
         winit::event_loop::EventLoopBuilder::<gui::GuiEvent>::with_user_event().build();
@@ -521,7 +597,10 @@ pub fn main() {
         .unwrap();
 
     event_loop.run(move |event, _, control_flow| {
-        gui::gui().write().unwrap().handle_event(&event);
+        if state.cursor_visible {
+            gui::gui().write().unwrap().handle_event(&event);
+        }
+
         input::update_input_state(&event);
 
         match event {
@@ -529,27 +608,7 @@ pub fn main() {
                 ref event,
                 window_id,
             } if window_id == state.window().id() => {
-                state.process_window_event(event);
-
-                match event {
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                state: ElementState::Pressed,
-                                virtual_keycode: Some(VirtualKeyCode::Escape),
-                                ..
-                            },
-                        ..
-                    } => *control_flow = ControlFlow::Exit,
-                    WindowEvent::Resized(physical_size) => {
-                        state.resize(*physical_size);
-                    }
-                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                        state.resize(**new_inner_size);
-                    }
-                    _ => {}
-                }
+                state.process_window_event(event, control_flow)
             }
             Event::RedrawRequested(window_id) if window_id == state.window().id() => {
                 state.time.current = state.time.start.elapsed();

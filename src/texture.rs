@@ -1,6 +1,6 @@
 use crate::resources;
 
-use anyhow::Result;
+use color_eyre::Result;
 use image::GenericImageView;
 
 pub struct Texture {
