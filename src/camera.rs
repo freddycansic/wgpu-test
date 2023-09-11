@@ -2,7 +2,7 @@ use cg::prelude::*;
 use cgmath as cg;
 use winit::event::VirtualKeyCode;
 
-use crate::input::{input, ContinuousKeyPresses};
+use crate::input;
 
 // opengl NDC has z dimension from -1 to 1, wgpu has it from 0 to 1
 #[rustfmt::skip]
@@ -43,30 +43,30 @@ impl Camera {
         let right = forward.cross(self.up).normalize();
         let speed = 10.0;
 
-        if input().read().unwrap().key_down(VirtualKeyCode::W) {
+        if input::key_down(VirtualKeyCode::W) {
             self.position += forward * speed * delta.as_secs_f32();
         }
 
-        if input().read().unwrap().key_down(VirtualKeyCode::S) {
+        if input::key_down(VirtualKeyCode::S) {
             self.position -= forward * speed * delta.as_secs_f32();
         }
 
-        if input().read().unwrap().key_down(VirtualKeyCode::A) {
+        if input::key_down(VirtualKeyCode::A) {
             self.position -= right * speed * delta.as_secs_f32();
         }
 
-        if input().read().unwrap().key_down(VirtualKeyCode::D) {
+        if input::key_down(VirtualKeyCode::D) {
             self.position += right * speed * delta.as_secs_f32();
         }
     }
 
     pub fn update_direction(&mut self, delta: instant::Duration) {
-        let mouse_diff = input().read().unwrap().mouse_diff();
+        let mouse_diff = input::mouse_diff();
 
-        let sensitivity = 1.5;
+        let sensitivity = 1.0;
 
-        self.yaw += mouse_diff.0 * sensitivity * delta.as_secs_f32();
-        self.pitch += mouse_diff.1 * sensitivity * delta.as_secs_f32();
+        self.yaw += mouse_diff.x * sensitivity * delta.as_secs_f32();
+        self.pitch += mouse_diff.y * sensitivity * delta.as_secs_f32();
 
         let offset = 0.01;
         let pi = std::f32::consts::PI;

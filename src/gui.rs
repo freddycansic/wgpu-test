@@ -5,6 +5,8 @@ use egui_winit_platform::PlatformDescriptor;
 use once_cell::sync::Lazy;
 use once_cell::sync::OnceCell;
 
+use crate::input;
+
 #[derive(Debug)]
 pub enum GuiEvent {
     RequestRedraw,
@@ -82,7 +84,7 @@ impl Gui {
 
         self.show(state);
 
-        if !state.cursor_visible {
+        if input::cursor_state() == input::CursorState::Hidden {
             self.platform
                 .get()
                 .unwrap()
@@ -159,6 +161,16 @@ impl Gui {
                     state.time.delta.as_micros() as f32 / 1000.0
                 );
                 ui.colored_label(color, text);
+
+                ui.add(
+                    egui::Slider::new(&mut state.num_instances_per_column, 1..=100)
+                        .text("Column Instances"),
+                );
+
+                ui.add(
+                    egui::Slider::new(&mut state.num_instances_per_row, 1..=100)
+                        .text("Row Instances"),
+                )
             });
     }
 }

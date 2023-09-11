@@ -1,8 +1,11 @@
-use std::ops::Range;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use color_eyre::Result;
+use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 
+use crate::instance::{InstanceRaw, Instances};
 use crate::texture::Texture;
 
 pub trait BufferContents {
@@ -33,22 +36,23 @@ impl BufferContents for ModelVertex {
 }
 
 pub struct Model {
+    pub name: Arc<String>,
     pub meshes: Vec<Mesh>,
     pub materials: Vec<Material>,
 }
 
 pub struct Material {
-    pub name: String,
+    pub name: Arc<String>,
     pub diffuse_texture: Texture,
     pub bind_group: wgpu::BindGroup,
 }
 
 pub struct Mesh {
-    pub name: String,
+    pub name: Arc<String>,
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub indices_count: u32,
-    pub material: usize,
+    pub material_index: usize,
 }
 
 impl Model {
@@ -58,7 +62,7 @@ impl Model {
         queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
     ) -> Result<Self> {
-        let (models, model_materials) = tobj::load_obj(
+        let (meshes, model_materials) = tobj::load_obj(
             path,
             &tobj::LoadOptions {
                 single_index: true,
@@ -104,23 +108,23 @@ impl Model {
                             resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
                         },
                     ],
-                    label: None,
+                    label: Some(format!("{:?}-diffuse-bind-group", path).as_str()),
                 });
 
                 Ok(Material {
-                    name: material.name,
+                    name: Arc::new(material.name),
                     diffuse_texture,
                     bind_group,
                 })
             })
             .collect::<Result<Vec<Material>>>()?;
 
-        let meshes = models
+        let meshes = meshes
             .into_iter()
-            .map(|model| {
-                let positions_chunks = model.mesh.positions.chunks(3);
-                let texcoords_chunks = model.mesh.texcoords.chunks(2);
-                let normals_chunks = model.mesh.normals.chunks(3);
+            .map(|mesh| {
+                let positions_chunks = mesh.mesh.positions.chunks(3);
+                let texcoords_chunks = mesh.mesh.texcoords.chunks(2);
+                let normals_chunks = mesh.mesh.normals.chunks(3);
 
                 let vertices = positions_chunks
                     .zip(texcoords_chunks)
@@ -133,47 +137,140 @@ impl Model {
                     .collect::<Vec<ModelVertex>>();
 
                 let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("{:?} Vertex Buffer", path)),
+                    label: Some(&format!("{:?}-vertex-buffer", mesh.name)),
                     contents: bytemuck::cast_slice(&vertices),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
                 let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("{:?} Index Buffer", path)),
-                    contents: bytemuck::cast_slice(&model.mesh.indices),
+                    label: Some(&format!("{:?}-index-buffer", mesh.name)),
+                    contents: bytemuck::cast_slice(&mesh.mesh.indices),
                     usage: wgpu::BufferUsages::INDEX,
                 });
 
                 Mesh {
-                    name: path.to_string(),
+                    name: Arc::new(mesh.name),
                     vertex_buffer,
                     index_buffer,
-                    indices_count: model.mesh.indices.len() as u32,
-                    material: model.mesh.material_id.unwrap_or(0),
+                    indices_count: mesh.mesh.indices.len() as u32,
+                    material_index: mesh.mesh.material_id.unwrap_or(0),
                 }
             })
             .collect::<Vec<Mesh>>();
 
-        Ok(Self { materials, meshes })
+        Ok(Self {
+            name: Arc::new(path.to_string()),
+            materials,
+            meshes,
+        })
     }
 }
 
-pub trait DrawModel<'a> {
-    fn draw_mesh(&mut self, mesh: &'a Mesh);
-    fn draw_mesh_instanced(&mut self, mesh: &'a Mesh, instances: Range<u32>);
+impl Hash for Model {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state)
+    }
 }
 
-impl<'a, 'b> DrawModel<'b> for wgpu::RenderPass<'a>
-// b lives at least as long as a
+impl PartialEq for Model {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Model {}
+
+pub trait DrawModels<'a> {
+    fn draw_models(
+        &mut self,
+        models: &'a mut FxHashMap<Arc<Model>, Instances>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    );
+}
+
+impl<'a, 'b> DrawModels<'b> for wgpu::RenderPass<'a>
 where
     'b: 'a,
 {
-    fn draw_mesh(&mut self, mesh: &'b Mesh) {
-        self.draw_mesh_instanced(mesh, 0..1)
-    }
+    // compile all stuff and draw
+    fn draw_models(
+        &mut self,
+        models: &'b mut FxHashMap<Arc<Model>, Instances>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        for (model, instances) in models.iter_mut() {
+            let model_instance_data = instances
+                .model_instances
+                .iter()
+                .map(InstanceRaw::from)
+                .collect::<Vec<InstanceRaw>>();
 
-    fn draw_mesh_instanced(&mut self, mesh: &'b Mesh, instances: Range<u32>) {
-        self.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-        self.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        self.draw_indexed(0..mesh.indices_count, 0, instances);
+            match &instances.instance_buffer {
+                Some(instance_buffer) => {
+                    let current_instance_buffer_len =
+                        instance_buffer.size() / std::mem::size_of::<InstanceRaw>() as u64;
+
+                    let next_instance_buffer_len = instances.model_instances.len() as u64;
+
+                    if next_instance_buffer_len > current_instance_buffer_len {
+                        instances.instance_buffer = Some(device.create_buffer_init(
+                            &wgpu::util::BufferInitDescriptor {
+                                label: Some(format!("{:?}-instance-buffer", model.name).as_str()),
+                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                                contents: bytemuck::cast_slice(&model_instance_data),
+                            },
+                        ));
+
+                        log::info!("Resized instance buffer for model \"{}\" to {} elements from {} elements", model.name, current_instance_buffer_len, next_instance_buffer_len)
+                    } else {
+                        queue.write_buffer(
+                            instances.instance_buffer.as_ref().unwrap(),
+                            0,
+                            bytemuck::cast_slice(&model_instance_data),
+                        );
+                    }
+                }
+                None => {
+                    instances.instance_buffer = Some(device.create_buffer_init(
+                        &wgpu::util::BufferInitDescriptor {
+                            label: Some(format!("{:?}-instance-buffer", model.name).as_str()),
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            contents: bytemuck::cast_slice(&model_instance_data),
+                        },
+                    ));
+
+                    log::info!("Created instance buffer for model \"{}\"", model.name)
+                }
+            }
+
+            // if let None = instances.instance_buffer {
+            //     instances.instance_buffer = Some(device.create_buffer_init(
+            //         &wgpu::util::BufferInitDescriptor {
+            //             label: Some(format!("{:?}-instance-buffer", model.name).as_str()),
+            //             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            //             contents: bytemuck::cast_slice(&model_instance_data),
+            //         },
+            //     ));
+
+            // } else {
+            //
+            // }
+
+            self.set_vertex_buffer(1, instances.instance_buffer.as_ref().unwrap().slice(..));
+
+            for mesh in model.meshes.iter() {
+                self.set_bind_group(0, &model.materials[mesh.material_index].bind_group, &[]);
+                self.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                self.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                self.draw_indexed(
+                    0..mesh.indices_count,
+                    0,
+                    0..instances.model_instances.len() as u32,
+                )
+            }
+
+            // instances.model_instances.clear()
+        }
     }
 }

@@ -1,21 +1,24 @@
 mod camera;
 mod gui;
 mod input;
+mod instance;
 mod model;
 mod resources;
 mod texture;
+
+use std::sync::Arc;
 
 use cg::prelude::*;
 use cgmath as cg;
 
 use color_eyre::Result;
 use fern::colors::Color;
+use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
-use winit::{
-    dpi::PhysicalPosition, event::*, event_loop::ControlFlow, window::Window, window::WindowBuilder,
-};
+use winit::{event::*, event_loop::ControlFlow, window::Window, window::WindowBuilder};
 
-use model::{BufferContents, DrawModel, Model};
+use instance::{Instances, ModelInstance};
+use model::{BufferContents, DrawModels, Model};
 use texture::Texture;
 
 #[repr(C)]
@@ -29,53 +32,6 @@ trait ToUniform<T: bytemuck::Pod + bytemuck::Zeroable> {
 impl ToUniform<MatrixUniform> for cg::Matrix4<f32> {
     fn to_uniform(self) -> MatrixUniform {
         MatrixUniform(self.into())
-    }
-}
-
-const NUM_INSTANCES_PER_ROW: u32 = 20;
-
-#[derive(Clone)]
-struct Instance {
-    position: cg::Vector3<f32>,
-    rotation: cg::Quaternion<f32>,
-}
-
-impl Default for Instance {
-    fn default() -> Self {
-        Self {
-            position: cg::Vector3::zero(),
-            rotation: cg::Quaternion::zero(),
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct InstanceRaw([[f32; 4]; 4]);
-
-impl InstanceRaw {
-    const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
-        wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4];
-}
-
-impl BufferContents for InstanceRaw {
-    fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &Self::INSTANCE_ATTRIBUTES,
-        }
-    }
-}
-
-impl From<&Instance> for InstanceRaw {
-    fn from(instance: &Instance) -> Self {
-        InstanceRaw(
-            (cg::Matrix4::from_translation(instance.position)
-                * cg::Matrix4::from(instance.rotation))
-            .into(),
-        )
     }
 }
 
@@ -93,17 +49,15 @@ pub struct State {
     size: winit::dpi::PhysicalSize<u32>,
     window: Window,
     render_pipeline: wgpu::RenderPipeline,
-    texture_bind_group: wgpu::BindGroup,
     depth_texture: Texture,
     camera: camera::Camera,
     view_projection_buffer: wgpu::Buffer,
     view_projection_bind_group: wgpu::BindGroup,
-    instances: Vec<Instance>,
-    instance_buffer: wgpu::Buffer,
     time: Time,
     fps: f32,
-    model: Model,
-    cursor_visible: bool,
+    models: FxHashMap<Arc<Model>, Instances>,
+    num_instances_per_row: u32,
+    num_instances_per_column: u32,
 }
 
 impl State {
@@ -172,14 +126,6 @@ impl State {
 
         surface.configure(&device, &config);
 
-        let diffuse_texture = Texture::from_bytes(
-            include_bytes!("../assets/happy-tree.png"),
-            &device,
-            &queue,
-            Some("happy-tree.png"),
-        )
-        .unwrap();
-
         let depth_texture = Texture::create_depth_texture(&device, &config, Some("depth-texture"));
 
         // bind group describes a set of resources and how they can be accessed by the shaders
@@ -207,21 +153,6 @@ impl State {
                 ],
                 label: Some("Texture Bind Group Layout"),
             });
-
-        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("diffuse-texture-bind-group"),
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
-                },
-            ],
-        });
 
         let camera = camera::Camera {
             position: (0.0, 2.0, 2.0).into(),
@@ -290,7 +221,7 @@ impl State {
                 // type of vertices to pass to the vertex shader
                 buffers: &[
                     model::ModelVertex::buffer_layout(),
-                    InstanceRaw::buffer_layout(),
+                    instance::InstanceRaw::buffer_layout(),
                 ],
             },
             fragment: Some(wgpu::FragmentState {
@@ -332,21 +263,23 @@ impl State {
             multiview: None,
         });
 
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("instance-buffer"),
-            mapped_at_creation: false,
-            size: std::mem::size_of::<[InstanceRaw; NUM_INSTANCES_PER_ROW.pow(2) as usize]>()
-                as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
+        let model =
+            Arc::new(Model::load("cube.obj", &device, &queue, &texture_bind_group_layout).unwrap());
 
-        let model = Model::load(
-            "torus_high_poly.obj",
-            &device,
-            &queue,
-            &texture_bind_group_layout,
-        )
-        .unwrap();
+        let mut models = FxHashMap::default();
+        models.insert(
+            model,
+            Instances {
+                model_instances: vec![ModelInstance {
+                    position: cg::Vector3::zero(),
+                    rotation: cg::Quaternion::zero(),
+                }],
+                ..Default::default()
+            },
+        );
+
+        let num_instances_per_row = 10;
+        let num_instances_per_column = 10;
 
         Self {
             surface,
@@ -356,21 +289,19 @@ impl State {
             size,
             window,
             render_pipeline,
-            texture_bind_group,
             depth_texture,
             camera,
             view_projection_buffer,
             view_projection_bind_group,
-            model,
-            instances: vec![Instance::default(); NUM_INSTANCES_PER_ROW.pow(2) as usize],
-            instance_buffer,
             time: Time {
                 start: instant::Instant::now(),
                 current: instant::Duration::default(),
                 delta: instant::Duration::default(),
             },
             fps: 0.0,
-            cursor_visible: false,
+            num_instances_per_column,
+            num_instances_per_row,
+            models,
         }
     }
 
@@ -393,14 +324,6 @@ impl State {
 
     // called per event
     fn process_window_event(&mut self, event: &WindowEvent, control_flow: &mut ControlFlow) {
-        if input::input()
-            .read()
-            .unwrap()
-            .key_released(VirtualKeyCode::G)
-        {
-            self.cursor_visible = !self.cursor_visible;
-        }
-
         match event {
             WindowEvent::CloseRequested
             | WindowEvent::KeyboardInput {
@@ -418,30 +341,9 @@ impl State {
             WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                 self.resize(**new_inner_size);
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                let center =
-                    cg::Point2::new((self.size.width / 2) as f32, (self.size.height / 2) as f32);
-
-                let mouse_diff = input::input().read().unwrap().mouse_diff();
-                let mouse_diff = cg::Vector2::new(mouse_diff.0, mouse_diff.1);
-
-                // if the mouse movement is greater than the distance from the edge of the screen to the center
-                if mouse_diff.magnitude() >= center.y.min(center.x) * 0.90 {
-                    // catch cursor moving back to the center and ignore the event
-                    return;
-                }
-
-                self.camera.update_direction(self.time.delta);
-
-                if position.x == 0.0
-                    || position.x == (self.size.width - 1) as f64
-                    || position.y == 0.0
-                    || position.y == (self.size.height - 1) as f64
-                {
-                    // return cursor back to the center
-                    self.window
-                        .set_cursor_position(PhysicalPosition::new(center.x, center.y))
-                        .unwrap();
+            WindowEvent::CursorMoved { .. } => {
+                if input::cursor_state() == input::CursorState::Hidden {
+                    self.camera.update_direction(self.time.delta);
                 }
             }
             _ => {}
@@ -456,15 +358,17 @@ impl State {
             bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().to_uniform()]),
         );
 
-        self.instances = (0..NUM_INSTANCES_PER_ROW)
+        // TODO TEMP!!!!!!!!!!!!!!!
+        self.models.iter_mut().next().unwrap().1.model_instances = (0..self
+            .num_instances_per_column)
             .flat_map(|x| {
-                let num_instances = NUM_INSTANCES_PER_ROW as f32;
+                let num_instances_per_column = self.num_instances_per_column as f32;
                 let pi = std::f32::consts::PI;
-                let angle = x as f32 / num_instances * pi * 2.0; // between 0 and 2pi
+                let angle = x as f32 / num_instances_per_column * pi * 2.0; // between 0 and 2pi
                 let angle = (angle + self.time.current.as_secs_f32()) % (pi * 2.0); // shift period by time
                 let y = angle.sin() * 2.0;
 
-                (0..NUM_INSTANCES_PER_ROW).map(move |z| Instance {
+                (0..self.num_instances_per_row).map(move |z| ModelInstance {
                     position: cg::Vector3 {
                         x: x as f32 * 2.5,
                         y: y * 3.0,
@@ -474,18 +378,6 @@ impl State {
                 })
             })
             .collect();
-
-        let instance_data = self
-            .instances
-            .iter()
-            .map(InstanceRaw::from)
-            .collect::<Vec<InstanceRaw>>();
-
-        self.queue.write_buffer(
-            &self.instance_buffer,
-            0,
-            bytemuck::cast_slice(&instance_data),
-        );
 
         self.camera.update_position(self.time.delta);
     }
@@ -536,12 +428,10 @@ impl State {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
+
             // uniforms
-            render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
             render_pass.set_bind_group(1, &self.view_projection_bind_group, &[]);
-            // rendering
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass.draw_mesh_instanced(&self.model.meshes[0], 0..self.instances.len() as u32);
+            render_pass.draw_models(&mut self.models, &self.device, &self.queue)
         }
 
         gui::gui()
@@ -597,11 +487,11 @@ pub fn main() -> Result<()> {
         .unwrap();
 
     event_loop.run(move |event, _, control_flow| {
-        if state.cursor_visible {
+        if input::cursor_state() == input::CursorState::Visible {
             gui::gui().write().unwrap().handle_event(&event);
         }
 
-        input::update_input_state(&event);
+        input::update_input_state(&event, &state.window);
 
         match event {
             Event::WindowEvent {
@@ -618,19 +508,16 @@ pub fn main() -> Result<()> {
                 match state.render() {
                     Ok(_) => {}
                     // reconfigure the surface if lost
-                    Err(err) if err.downcast_ref::<wgpu::SurfaceError>().is_some() => {
-                        let surface_error = err.downcast_ref::<wgpu::SurfaceError>().unwrap();
-                        match surface_error {
-                            wgpu::SurfaceError::Lost => state.resize(state.size),
-                            _ => {
-                                eprintln!("{:?}", surface_error);
-                                *control_flow = ControlFlow::Exit;
-                            }
-                        }
-                    }
                     Err(err) => {
-                        eprintln!("{:?}", err);
-                        *control_flow = ControlFlow::Exit
+                        if err
+                            .downcast_ref::<wgpu::SurfaceError>()
+                            .is_some_and(|err| *err == wgpu::SurfaceError::Lost)
+                        {
+                            state.resize(state.size)
+                        } else {
+                            eprintln!("{:?}", err);
+                            *control_flow = ControlFlow::Exit;
+                        }
                     }
                 }
 
