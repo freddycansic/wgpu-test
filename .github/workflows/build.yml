@@ -16,7 +16,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    - name: Build
-      run: cargo check
+    - name: Build editor
+      run: cargo check --bin editor
+    - name: Build game
+      run: cargo check --bin game
     - name: Run tests
       run: cargo test
