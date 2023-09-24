@@ -1,4 +1,4 @@
-use crate::BufferContents;
+use crate::common::model::BufferContents;
 use cg::prelude::*;
 use cgmath as cg;
 
@@ -25,14 +25,14 @@ pub struct Instances {
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct InstanceRaw([[f32; 4]; 4]);
+pub struct RawInstance([[f32; 4]; 4]);
 
-impl InstanceRaw {
+impl RawInstance {
     const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
         wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4];
 }
 
-impl BufferContents for InstanceRaw {
+impl BufferContents for RawInstance {
     fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
         use std::mem;
         wgpu::VertexBufferLayout {
@@ -43,9 +43,9 @@ impl BufferContents for InstanceRaw {
     }
 }
 
-impl From<&ModelInstance> for InstanceRaw {
+impl From<&ModelInstance> for RawInstance {
     fn from(instance: &ModelInstance) -> Self {
-        InstanceRaw(
+        RawInstance(
             (cg::Matrix4::from_translation(instance.position)
                 * cg::Matrix4::from(instance.rotation))
             .into(),

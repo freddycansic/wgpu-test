@@ -55,7 +55,10 @@ pub fn mouse_diff() -> cg::Vector2<f32> {
     MOUSE_MOVEMENT.read().unwrap().current_position - MOUSE_MOVEMENT.read().unwrap().window_center
 }
 
-pub fn update_input_state(event: &Event<crate::gui::GuiEvent>, window: &winit::window::Window) {
+pub fn update_input_state(
+    event: &Event<crate::common::gui::GuiEvent>,
+    window: &winit::window::Window,
+) {
     WINIT_INPUT_HELPER.write().unwrap().update(event);
 
     if let Event::WindowEvent { ref event, .. } = event {
@@ -66,10 +69,12 @@ pub fn update_input_state(event: &Event<crate::gui::GuiEvent>, window: &winit::w
             match cursor_state() {
                 CursorState::Hidden => *CURSOR_STATE.write().unwrap() = CursorState::Visible,
                 CursorState::Visible => {
-                    let window_center = MOUSE_MOVEMENT.read().unwrap().window_center;
                     // force mouse position back to center of screen, hacky
                     *CURSOR_STATE.write().unwrap() = CursorState::Hidden;
+                    let window_center = MOUSE_MOVEMENT.read().unwrap().window_center;
                     update_mouse_diff(window_center, window);
+
+                    // return early to avoid processing cursor move event not at center of screen
                     return;
                 }
             }

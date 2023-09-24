@@ -2,7 +2,7 @@ use cg::prelude::*;
 use cgmath as cg;
 use winit::event::VirtualKeyCode;
 
-use crate::input;
+use crate::common::input;
 
 // opengl NDC has z dimension from -1 to 1, wgpu has it from 0 to 1
 #[rustfmt::skip]

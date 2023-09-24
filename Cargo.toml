@@ -35,7 +35,15 @@ features = ["png", "jpeg"]
 # [profile.release]
 # debug = true
 
-# [build-dependencies]
-# anyhow = "1.0"
-# fs_extra = "1.2"
-# glob = "0.3"
+[[bin]]
+name = "game"
+src = "src/bin/game.rs"
+
+[[bin]]
+name = "editor"
+src = "src/editor/editor.rs"
+
+[build-dependencies]
+color-eyre = "0.6"
+fs_extra = "1.2"
+glob = "0.3"

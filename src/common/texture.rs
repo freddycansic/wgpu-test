@@ -1,7 +1,10 @@
-use crate::resources;
+use std::rc::Rc;
+
+use crate::common::resources;
 
 use color_eyre::Result;
 use image::GenericImageView;
+use rustc_hash::FxHashMap;
 
 pub struct Texture {
     pub texture: wgpu::Texture,
@@ -139,5 +142,34 @@ impl Texture {
             view,
             sampler,
         }
+    }
+}
+
+pub struct TextureAtlas(FxHashMap<Rc<String>, Rc<Texture>>);
+
+impl TextureAtlas {
+    pub fn new() -> Self {
+        Self(FxHashMap::default())
+    }
+
+    pub fn get(
+        &mut self,
+        path: Rc<String>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<Rc<Texture>> {
+        if let Some(texture) = self.0.get(&path) {
+            log::info!("Texture \"{path}\" already loaded, returning reference.");
+            return Ok(texture.clone());
+        }
+
+        // todo!("Bind group should be independent of texture, see https://sotrh.github.io/learn-wgpu/intermediate/tutorial11-normals/#normal-mapping");
+        // each material should have a bind group which is created at model load time
+        log::info!("Loading texture \"{path}\".");
+        let texture = Rc::new(Texture::from_path(&path, device, queue, Some(&path))?);
+
+        self.0.insert(path, texture.clone());
+
+        Ok(texture)
     }
 }
